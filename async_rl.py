@@ -130,31 +130,41 @@ for thread_num in xrange(num_threads):
   workers.append(t)
 
 
+def network_trainable_variables():
+  return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                     "network")
+
 ## Accum Gradients stuff ##
+def build_graph():
+  # ops to define deep q network graph
+  # ops to define loss
+  # op to compute gradient on loss
+  # op to += gradients
+  # op to zero out gradients
+  optimizer = tf.train.AdamOptimizer(1e-4) 
+  
+  # Compute gradients using the optimizer and cost function, pass all trainable variables as argument
+  getGrads = optimizer.compute_gradients(cost, var_list=tf.trainable_variables())
+  
+  # Assign add ( += operation ) new gradients to gradient variables
+  grad_opList = [tf.assign_add(v,g) for v,g in zip(gradVarlist, [grad[0] for grad in getGrads])]
+  
+  # # Perform gradient averaging ( /= operation ) on accumulated gradients to calculate average grads.
+  # div_opList = [tf.div(gradvar, batchSize) for gradvar in gradVarlist]
+  
+  # Apply gradients
+  apply_grads = optimizer.apply_gradients(zip([tf.convert_to_tensor(grads) for grads in gradVarlist], tf.trainable_variables()))
+  
+  # Zero out gradients
+  zero_out_grads = [tf.assign(grad,np.zeros(grad.get_shape().as_list(), dtype=np.float32)) for grad in gradVarlist]
 
 # within each actor-learner thread
-def accum_gradients():
-    optimizer = tf.train.AdamOptimizer(1e-4)
-    
-    # Compute gradients using the optimizer and cost function, pass all trainable variables as argument
-    getGrads = optimizer.compute_gradients(cost, var_list=tf.trainable_variables())
-    
-    # Assign add ( += operation ) new gradients to gradient variables
-    grad_opList = [tf.assign_add(v,g) for v,g in zip(gradVarlist, [grad[0] for grad in getGrads])]
-    
-    # Perform gradient averaging ( /= operation ) on accumulated gradients to calculate average grads.
-    div_opList = [tf.div(gradvar, batchSize) for gradvar in gradVarlist]
-    
-    # Apply gradients
-    apply_grads = optimizer.apply_gradients(zip([tf.convert_to_tensor(grads) for grads in gradVarlist], tf.trainable_variables()))
-    
-    # Zero out gradients
-    zero_out_grads = [tf.assign(grad,np.zeros(grad.get_shape().as_list(), dtype=np.float32)) for grad in gradVarlist]
-    sess.run(grad_opList, feed_dict={X: resizedImgs, Y: batch[1], p_keep_conv: 0.7, p_keep_hidden: 0.5}) # Iteratively accumulate your gradients
-    
-    sess.run(div_opList) # Average your gradients
-    sess.run(apply_grads) # Apply gradients
-    sess.run(zero_out_grads) # Zero out the gradient variables
+def accum_gradients(sess):
+  sess.run(grad_opList, feed_dict={X: resizedImgs, Y: batch[1], p_keep_conv: 0.7, p_keep_hidden: 0.5}) # Iteratively accumulate your gradients
+  
+def async_update(sess, apply_grads):
+  sess.run(apply_grads) # Apply gradients
+  sess.run(zero_out_grads) # Zero out the gradient variables
 
 
 ## Target network stuff
