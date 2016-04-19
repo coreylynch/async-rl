@@ -18,14 +18,14 @@ def _variable_on_cpu(name, shape, initializer):
   return var
 
 def weight_variable(name, shape, stddev=0.01):
-    initializer = tf.truncated_normal_initializer(shape)
+    initializer = tf.truncated_normal_initializer(stddev)
     return _variable_on_cpu(name, shape, initializer)
 
 def bias_variable(name, shape):
-    initializer = tf.constant(0.1, shape=shape)
+    initializer = tf.constant_initializer(0.1)
     return _variable_on_cpu(name, shape, initializer)
 
-def inference(state):
+def build_network(state):
   """Build the Deep Q-Network
 
   Args:
@@ -43,12 +43,10 @@ def inference(state):
     bias = tf.nn.bias_add(conv, biases)
     conv1 = tf.nn.relu(bias, name=scope.name)
 
-  return conv1
-
   # conv2
   with tf.variable_scope('conv2') as scope:
     kernel = weight_variable('weights', shape=[4, 4, 32, 64])
-    conv = tf.nn.conv2d(conv1, kernel, strides=[1, 4, 4, 1], padding='SAME')
+    conv = tf.nn.conv2d(conv1, kernel, strides=[1, 2, 2, 1], padding='SAME')
     biases = bias_variable('biases', shape=[64])
     bias = tf.nn.bias_add(conv, biases)
     conv2 = tf.nn.relu(bias, name=scope.name)
@@ -56,15 +54,21 @@ def inference(state):
   # conv3
   with tf.variable_scope('conv3') as scope:
     kernel = weight_variable('weights', shape=[3, 3, 64, 64])
-    conv = tf.nn.conv2d(conv1, kernel, strides=[1, 4, 4, 1], padding='SAME')
+    conv = tf.nn.conv2d(conv2, kernel, strides=[1, 1, 1, 1], padding='SAME')
     biases = bias_variable('biases', shape=[64])
     bias = tf.nn.bias_add(conv, biases)
     conv3 = tf.nn.relu(bias, name=scope.name)
 
   # fc1
   with tf.variable_scope('fc1') as scope:
-    reshape = tf.reshape(conv3, [-1, 1600])
-    weights = weight_variable('weights', shape=[1600, 512])
+    # Move everything into depth so we can perform a single matrix multiply.
+    dim = 1
+    for d in conv3.get_shape()[1:].as_list():
+      dim *= d
+    reshape = tf.reshape(conv3, [1, dim])
+
+    # reshape = tf.reshape(conv3, [-1, 1600])
+    weights = weight_variable('weights', shape=[dim, 512])
     biases = bias_variable('biases', shape=[512])
     fc1 = tf.nn.relu(tf.matmul(reshape, weights) + biases, name=scope.name)
 
@@ -88,15 +92,4 @@ def loss(q_values, a, y):
   """
   action_value = tf.reduce_sum(tf.mul(q_values, a), reduction_indices = 1)
   cost = tf.reduce_mean(tf.square(y - action_value))
-
-# Placeholders
-s = tf.placeholder("float", [None, 84, 84, 4]) # Previous agent_history_length frames
-a = tf.placeholder("float", [None, ACTIONS]) # One hot vector representing chosen action at time t
-y = tf.placeholder("float", [None]) # Float holding y_t, the target value for chosen action at time t
-
-# Build a Graph that computes the logits predictions from the
-# inference model.
-q_values = inference(s) # Vector of size ACTIONS, holding Q(s_t,a_t) at time t
-
-# Calculate loss.
-loss = loss(q_values, a, y)
+  return cost

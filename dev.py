@@ -6,22 +6,9 @@ import threading
 from skimage.transform import resize
 import numpy as np
 from collections import deque
+from model import build_network, loss
 
-def _variable_on_cpu(name, shape, initializer):
-  """Helper to create a Variable stored on CPU memory.
-
-  Args:
-    name: name of the variable
-    shape: list of ints
-    initializer: initializer for Variable
-
-  Returns:
-    Variable Tensor
-  """
-  with tf.device('/cpu:0'):
-    var = tf.get_variable(name, shape, initializer=initializer)
-  return var
-
+ACTIONS = 4
 
 class Environment(object):
   """
@@ -182,22 +169,18 @@ class GlobalThread(object):
   def build_graph(self):
     """ Placeholder for the function that builds up the model 
     """
+
+    # Placeholders
+    state = tf.placeholder("float", [None, 84, 84, 4]) # Previous agent_history_length frames
+    a = tf.placeholder("float", [None, ACTIONS]) # One hot vector representing chosen action at time t
+    y = tf.placeholder("float", [None]) # Float holding y_t, the target value for chosen action at time t
+
     # Initialize online network and target network.
     with tf.variable_scope('network_params') as scope:
-      l1_var_1 = _variable_on_cpu('weights1', (10),
-                             tf.truncated_normal_initializer(stddev=0.01))
-      l1_var_2 = _variable_on_cpu('weights2', (10),
-                             tf.truncated_normal_initializer(stddev=0.01))
-      l1_var_3 = _variable_on_cpu('weights3', (10),
-                             tf.truncated_normal_initializer(stddev=0.01))
+      network = build_network(state)
     
     with tf.variable_scope('target_network_params') as scope:
-      l2_var_1 = _variable_on_cpu('weights1', (10),
-                            tf.truncated_normal_initializer(stddev=0.01))
-      l2_var_2 = _variable_on_cpu('weights2', (10),
-                            tf.truncated_normal_initializer(stddev=0.01))
-      l2_var_3 = _variable_on_cpu('weights3', (10),
-                             tf.truncated_normal_initializer(stddev=0.01))
+      target_network = build_network(state)
 
     # Op for periodically updating target network with online network weights
     network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
@@ -317,9 +300,10 @@ def main(_):
       target_network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                        "target_network_params")
 
-      print network_params[2].eval()
-      print target_network_params[2].eval()
+      print network_params[2].eval()[0][0][:10]
+      print target_network_params[2].eval()[0][0][:10]
 
+      print (network_params[2].eval()[0][0][:10] == target_network_params[2].eval()[0][0][:10])
 
 if __name__ == "__main__":
   tf.app.run()
