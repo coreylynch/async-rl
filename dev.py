@@ -9,6 +9,8 @@ from collections import deque
 from model import build_network, loss
 
 ACTIONS = 4
+NUM_CONCURRENT = 4
+GAMMA = 0.01
 
 class Environment(object):
   """
@@ -169,18 +171,25 @@ class GlobalThread(object):
   def build_graph(self):
     """ Placeholder for the function that builds up the model 
     """
-
     # Placeholders
     state = tf.placeholder("float", [None, 84, 84, 4]) # Previous agent_history_length frames
     a = tf.placeholder("float", [None, ACTIONS]) # One hot vector representing chosen action at time t
     y = tf.placeholder("float", [None]) # Float holding y_t, the target value for chosen action at time t
+    self._state=state
+    self._a = a
+    self._y = y
 
     # Initialize online network and target network.
     with tf.variable_scope('network_params') as scope:
       network = build_network(state)
-    
     with tf.variable_scope('target_network_params') as scope:
       target_network = build_network(state)
+
+    self._network = network
+    self._target_network = target_network
+    
+    # Set up loss
+    cost = loss(network, a, y)
 
     # Op for periodically updating target network with online network weights
     network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
@@ -188,6 +197,44 @@ class GlobalThread(object):
     target_network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                         "target_network_params")
     self._reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
+
+    # Set up async update stuff
+    for i in range(NUM_CONCURRENT):
+      with tf.variable_scope('grads_'+str(i)) as scope:
+        grad_vars = [tf.Variable(np.zeros(var.get_shape().as_list(), dtype=np.float32), trainable=False) for var in network_params]
+
+    optimizers = []
+    for i in range(NUM_CONCURRENT):
+        optimizers.append(tf.train.AdamOptimizer(1e-4))
+    self._optimizers = optimizers
+
+    get_grads = []
+    for i in range(NUM_CONCURRENT):
+        get_grads.append(self._optimizers[i].compute_gradients(cost, var_list=network_params))
+    self._get_grads = get_grads
+
+    assign_add_gradients = []
+    for i in range(NUM_CONCURRENT):
+        assign_add_gradients.append([tf.assign_add(v,g) for v,g in zip(network_params, [grad[0] for grad in self._get_grads[i]])])
+    self._assign_add_gradients = assign_add_gradients
+
+    async_apply_grads = []
+    for i in range(NUM_CONCURRENT):
+        name_space = "grads_"+str(i)
+        grads_i = tf.get_collection(tf.GraphKeys.VARIABLES,
+                                       name_space)
+        async_apply_i = self._optimizers[i].apply_gradients(zip([tf.convert_to_tensor(grads) for grads in grads_i], network_params))
+        async_apply_grads.append(async_apply_i)
+    self._async_apply_grads = async_apply_grads
+
+    zero_out_grads = []
+    for i in range(NUM_CONCURRENT):
+        name_space = "grads_"+str(i)
+        grads_i = tf.get_collection(tf.GraphKeys.VARIABLES,
+                                       name_space)
+        zero_out_grads_i = [tf.assign(grad,np.zeros(grad.get_shape().as_list(), dtype=np.float32)) for grad in grads_i]
+        zero_out_grads.append(zero_out_grads_i)
+    self._zero_out_grads = zero_out_grads
 
     # Global variables
     self._epoch = tf.Variable(0)
@@ -199,7 +246,7 @@ class GlobalThread(object):
     """ var += 1 """
     self._session.run(var.assign_add(1))
 
-  def _actor_learner_thread(self):
+  def _actor_learner_thread(self, i):
     """
     Main actor learner thread:
     - Initialize thread-specific environment
@@ -212,14 +259,12 @@ class GlobalThread(object):
     # Get initial game state
     state = environment.get_initial_state()
 
-    # initialize thread specific optimizer for computing gradients
-
     # Main learning loop
     T = 0
     T_max = 100
     while T < T_max:
       # Get predictions
-      # Q_s_a = self.network.forward(state)
+      Q_s_a = self._session.run(self._network, feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)) })
 
       # Take action a according to the e-greedy policy
       # TODO: thread-specific exploration policy
@@ -232,15 +277,18 @@ class GlobalThread(object):
 
       # Execute the chosen action
       (reward, new_state, terminal) = environment.execute(action)
-      if reward > 0:
-        print np.shape(new_state)
-        print "action: ", action
-        print "reward: ", reward
-        print "terminal: ", terminal
 
       # Compute y using target network
+      target_Q_s_a = self._session.run(self._target_network, feed_dict={self._state : np.reshape(new_state, (1, 84, 84, 4)) })
+      if terminal:
+        y = reward
+      else:
+        y = reward + GAMMA * np.max(target_Q_s_a)
 
-      # Accumulate gradients
+      # actions = np.zeros(environment.num_actions())
+      # actions[action]=1.0
+      # # Accumulate gradients
+      # self._session.run(self._assign_add_gradients[i], feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)), self._a: np.reshape(actions, (1, 4)), self._y: np.reshape(1.0, (1,))})
 
       if not terminal:
         state = new_state
@@ -258,15 +306,15 @@ class GlobalThread(object):
 
     self._session.run(self._reset_target_network_params) # Update the target network periodically
     self._increment(self._epoch)
+    print("=======================================done==============================")
 
   def train(self):
     """
     Creates and kicks off num_concurrent actor-learner threads
     """
     workers = []
-    num_concurrent = 4
-    for _ in xrange(num_concurrent):
-      t = threading.Thread(target=self._actor_learner_thread)
+    for thread_id in xrange(NUM_CONCURRENT):
+      t = threading.Thread(target=self._actor_learner_thread, args=(thread_id,))
       t.start()
       workers.append(t)
     for t in workers:
@@ -282,7 +330,6 @@ class GlobalThread(object):
     ale.loadROM('/Users/coreylynch/dev/atari_roms/breakout.bin')
     self._ale_io_lock.release()
     return ale
-
 
 def main(_):
   g = tf.Graph()
@@ -300,10 +347,9 @@ def main(_):
       target_network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                        "target_network_params")
 
-      print network_params[2].eval()[0][0][:10]
-      print target_network_params[2].eval()[0][0][:10]
-
-      print (network_params[2].eval()[0][0][:10] == target_network_params[2].eval()[0][0][:10])
+      # small test to ensure copy worked
+      assert (False not in (network_params[2].eval() == target_network_params[2].eval()).flatten())
+      print "=========COPY SUCCEEDED=========="
 
 if __name__ == "__main__":
   tf.app.run()
