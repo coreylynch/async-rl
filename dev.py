@@ -167,11 +167,11 @@ class GlobalThread(object):
     self._ale_io_lock = ale_io_lock
     self.build_graph()
     self.rng = np.random.RandomState(123456)
-
+  
   def build_graph(self):
     """ Placeholder for the function that builds up the model 
     """
-    # Placeholders
+    # Input Placeholders
     state = tf.placeholder("float", [None, 84, 84, 4]) # Previous agent_history_length frames
     a = tf.placeholder("float", [None, ACTIONS]) # One hot vector representing chosen action at time t
     y = tf.placeholder("float", [None]) # Float holding y_t, the target value for chosen action at time t
@@ -179,17 +179,17 @@ class GlobalThread(object):
     self._a = a
     self._y = y
 
-    # Initialize online network and target network.
+    # Set up online network and target network.
     with tf.variable_scope('network_params') as scope:
       network = build_network(state)
     with tf.variable_scope('target_network_params') as scope:
       target_network = build_network(state)
-
     self._network = network
     self._target_network = target_network
     
     # Set up loss
     cost = loss(network, a, y)
+    self._cost = cost
 
     # Op for periodically updating target network with online network weights
     network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
@@ -198,53 +198,73 @@ class GlobalThread(object):
                                         "target_network_params")
     self._reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
 
-    # Set up async update stuff
+    # One gradients list per thread
     for i in range(NUM_CONCURRENT):
       with tf.variable_scope('grads_'+str(i)) as scope:
         grad_vars = [tf.Variable(np.zeros(var.get_shape().as_list(), dtype=np.float32), trainable=False) for var in network_params]
 
+    # One optimizer per thread    
     optimizers = []
     for i in range(NUM_CONCURRENT):
         optimizers.append(tf.train.AdamOptimizer(1e-4))
     self._optimizers = optimizers
 
-    get_grads = []
+    # One compute_gradients op per thread
+    compute_gradients_ops = []
     for i in range(NUM_CONCURRENT):
-        get_grads.append(self._optimizers[i].compute_gradients(cost, var_list=network_params))
-    self._get_grads = get_grads
+        compute_gradients_ops.append(self._optimizers[i].compute_gradients(cost, var_list=network_params))
+    self._compute_gradients_ops = compute_gradients_ops
+    self._grads_and_vars = compute_gradients_ops
 
-    assign_add_gradients = []
+    # One gradient assign add (+=) op per thread
+    assign_add_gradients_ops = []
     for i in range(NUM_CONCURRENT):
-        assign_add_gradients.append([tf.assign_add(v,g) for v,g in zip(network_params, [grad[0] for grad in self._get_grads[i]])])
-    self._assign_add_gradients = assign_add_gradients
+        namespace = 'grads_'+str(i)
+        grad_vars = tf.get_collection(tf.GraphKeys.VARIABLES, namespace)
+        assign_add_gradients_ops.append([tf.assign_add(v,g) for v,g in zip(grad_vars, [grad[0] for grad in self._compute_gradients_ops[i]])])
+    self._assign_add_gradients_ops = assign_add_gradients_ops
 
-    async_apply_grads = []
+    # "Async apply gradients" consists of two operations:
+    # 1) Copy thread-local gradients to global thread's gradient placeholders
+    # 2) Have global thread call apply_gradients on it's network_params using the
+    #    gradients currently in the placeholders
+
+    # Set up global optimizer (just to apply gradients from threads to shared network_params)
+    apply_grads_optimizer = tf.train.AdamOptimizer(1e-4)
+    grads_and_vars = apply_grads_optimizer.compute_gradients(cost, network_params)
+
+    # Op for applying whatever is in the placeholder gradients
+    # placeholder_gradients = []
+    # for grad_var in grads_and_vars:
+    #    placeholder_gradients.append((tf.placeholder('float', shape=grad_var[1].get_shape()), grad_var[1]))
+    placeholder_gradients = []
+    for var in network_params:
+      variable = tf.Variable(np.zeros(var.get_shape().as_list(), dtype=np.float32), trainable=False)
+      tensor = variable.value()
+      placeholder_gradients.append((tensor, variable))
+    self._placeholder_gradients = placeholder_gradients
+
+    copy_gradients_ops = []
     for i in range(NUM_CONCURRENT):
-        name_space = "grads_"+str(i)
-        grads_i = tf.get_collection(tf.GraphKeys.VARIABLES,
-                                       name_space)
-        async_apply_i = self._optimizers[i].apply_gradients(zip([tf.convert_to_tensor(grads) for grads in grads_i], network_params))
-        async_apply_grads.append(async_apply_i)
-    self._async_apply_grads = async_apply_grads
+        namespace = 'grads_'+str(i)
+        grad_vars = tf.get_collection(tf.GraphKeys.VARIABLES, namespace) # list of just variables
+        copy_gradients_i = [placeholder_gradients[i][1].assign(grad_vars[i]) for i in range(len(placeholder_gradients))]
+        copy_gradients_ops.append(copy_gradients_i)
+    self._copy_gradients_ops = copy_gradients_ops
 
-    zero_out_grads = []
+    apply_gradients = apply_grads_optimizer.apply_gradients(placeholder_gradients)
+    self.apply_gradients = apply_gradients
+
+    # Zero out gradients
+    zero_out_gradients_ops = []
     for i in range(NUM_CONCURRENT):
-        name_space = "grads_"+str(i)
-        grads_i = tf.get_collection(tf.GraphKeys.VARIABLES,
-                                       name_space)
-        zero_out_grads_i = [tf.assign(grad,np.zeros(grad.get_shape().as_list(), dtype=np.float32)) for grad in grads_i]
-        zero_out_grads.append(zero_out_grads_i)
-    self._zero_out_grads = zero_out_grads
-
-    # Global variables
-    self._epoch = tf.Variable(0)
+        namespace = 'grads_'+str(i)
+        grad_vars = tf.get_collection(tf.GraphKeys.VARIABLES, namespace)
+        zero_out_gradients_ops.append([tf.assign(grad,np.zeros(grad.get_shape().as_list(), dtype=np.float32)) for grad in grad_vars])
+    self._zero_out_gradients_ops = zero_out_gradients_ops
 
     tf.initialize_all_variables().run()
     print("VARIABLES INITIALIZED")
-
-  def _increment(self, var):
-    """ var += 1 """
-    self._session.run(var.assign_add(1))
 
   def _actor_learner_thread(self, i):
     """
@@ -277,6 +297,7 @@ class GlobalThread(object):
 
       # Execute the chosen action
       (reward, new_state, terminal) = environment.execute(action)
+      reward = np.clip(reward, -1, 1)
 
       # Compute y using target network
       target_Q_s_a = self._session.run(self._target_network, feed_dict={self._state : np.reshape(new_state, (1, 84, 84, 4)) })
@@ -285,10 +306,32 @@ class GlobalThread(object):
       else:
         y = reward + GAMMA * np.max(target_Q_s_a)
 
-      # actions = np.zeros(environment.num_actions())
-      # actions[action]=1.0
-      # # Accumulate gradients
-      # self._session.run(self._assign_add_gradients[i], feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)), self._a: np.reshape(actions, (1, 4)), self._y: np.reshape(1.0, (1,))})
+      print np.max(target_Q_s_a)
+
+      actions = np.zeros(environment.num_actions())
+      actions[action]=1.0
+
+      # loss = self._session.run(self._cost, feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)), self._a: np.reshape(actions, (1, 4)), self._y: np.reshape(reward, (1,))})
+      # print(loss)
+
+      # Accumulate gradients
+      # self._session.run(self._assign_add_gradients_ops[i], feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)), self._a: np.reshape(actions, (1, 4)), self._y: np.reshape(1.0, (1,))})
+
+      # Apply gradients
+      if T % 5 == 0:
+        # self._session.run(self._copy_gradients_ops[i])
+        # self._session.run(self.apply_gradients)
+
+        # Zero out accumulated gradients
+        self._session.run(self._zero_out_gradients_ops[i])
+
+      # Apply gradients
+      # feed_dict = {}
+      # for j, grad_var in enumerate(self._grads_and_vars[i]):
+      #   with self._session.as_default():
+      #     print type(grad_var[0].eval())
+        # feed_dict[self._placeholder_gradients[i][0]] = self._session.run(self._grads_and_vars[i][0])
+      # self._session.run(self.apply_gradients, feed_dict=feed_dict)
 
       if not terminal:
         state = new_state
@@ -305,7 +348,7 @@ class GlobalThread(object):
       #   self.clear_gradients()
 
     self._session.run(self._reset_target_network_params) # Update the target network periodically
-    self._increment(self._epoch)
+    # self._increment(self._epoch)
     print("=======================================done==============================")
 
   def train(self):

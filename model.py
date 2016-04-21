@@ -19,6 +19,7 @@ def _variable_on_cpu(name, shape, initializer):
 
 def weight_variable(name, shape):
     initializer = tf.contrib.layers.xavier_initializer_conv2d()
+    # initializer = tf.truncated_normal_initializer(0.01)
     return _variable_on_cpu(name, shape, initializer)
 
 def bias_variable(name, shape):
