@@ -18,13 +18,16 @@ def _variable_on_cpu(name, shape, initializer):
   return var
 
 def weight_variable(name, shape):
-    # initializer = tf.contrib.layers.xavier_initializer_conv2d()
-    initializer = tf.truncated_normal_initializer(.01)
-    return _variable_on_cpu(name, shape, initializer)
+    with tf.device('/cpu:0'):
+      initial = tf.truncated_normal(shape, stddev = 0.01)
+      var = tf.Variable(initial)
+    return var
 
 def bias_variable(name, shape):
-    initializer = tf.constant_initializer(0.1)
-    return _variable_on_cpu(name, shape, initializer)
+    with tf.device('/cpu:0'):
+      initial = tf.constant(0.01, shape = shape)
+      var = tf.Variable(initial)
+    return var
 
 def build_network(state):
   """Build the Deep Q-Network
