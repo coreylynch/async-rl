@@ -6,10 +6,10 @@ import threading
 from skimage.transform import resize
 import numpy as np
 from collections import deque
-from model import build_network, loss
+from model_test import build_network, loss
 
 ACTIONS = 4
-NUM_CONCURRENT = 4
+NUM_CONCURRENT = 3
 GAMMA = 0.01
 
 class Environment(object):
@@ -128,7 +128,11 @@ class Environment(object):
     self.state_buffer.popleft()
     self.state_buffer.append(current_frame)
 
+    new_state = np.reshape(new_state, (1, 84, 84, 4))
     return new_state
+    # x_t = np.random.randn(84,84)
+    # return [np.stack((x_t, x_t, x_t, x_t), axis=2)]
+
 
   def execute(self, action):
     """Executes an action in the environment on behalf of
@@ -153,7 +157,8 @@ class Environment(object):
     """
     max_image = np.maximum(self.screen_buffer[self.index, ...],
                            self.screen_buffer[(0 if self.index == 1 else 1), ...])
-    return resize(max_image, (self.resized_width, self.resized_height))
+    resized = resize(max_image, (self.resized_width, self.resized_height))
+    return resized
 
 class GlobalThread(object):
   """
@@ -167,6 +172,7 @@ class GlobalThread(object):
     self._ale_io_lock = ale_io_lock
     self.build_graph()
     self.rng = np.random.RandomState(123456)
+    self._session.run(self._reset_target_network_params)
   
   def build_graph(self):
     """ Placeholder for the function that builds up the model 
@@ -284,7 +290,7 @@ class GlobalThread(object):
     T_max = 100
     while T < T_max:
       # Get predictions
-      Q_s_a = self._session.run(self._network, feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)) })
+      Q_s_a = self._session.run(self._network, feed_dict={self._state : state })
 
       # Take action a according to the e-greedy policy
       # TODO: thread-specific exploration policy
@@ -300,27 +306,25 @@ class GlobalThread(object):
       reward = np.clip(reward, -1, 1)
 
       # Compute y using target network
-      target_Q_s_a = self._session.run(self._target_network, feed_dict={self._state : np.reshape(new_state, (1, 84, 84, 4)) })
+      target_Q_s_a = self._session.run(self._target_network, feed_dict={self._state : state })
       if terminal:
         y = reward
       else:
         y = reward + GAMMA * np.max(target_Q_s_a)
 
-      print np.max(target_Q_s_a)
-
       actions = np.zeros(environment.num_actions())
       actions[action]=1.0
 
-      # loss = self._session.run(self._cost, feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)), self._a: np.reshape(actions, (1, 4)), self._y: np.reshape(reward, (1,))})
-      # print(loss)
+      loss = self._session.run(self._cost, feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)), self._a: np.reshape(actions, (1, 4)), self._y: np.reshape(y, (1,))})
+      print(loss)
 
       # Accumulate gradients
-      # self._session.run(self._assign_add_gradients_ops[i], feed_dict={self._state : np.reshape(state, (1, 84, 84, 4)), self._a: np.reshape(actions, (1, 4)), self._y: np.reshape(1.0, (1,))})
+      self._session.run(self._assign_add_gradients_ops[i], feed_dict={self._state : state, self._a: np.reshape(actions, (1, 4)), self._y: np.reshape(y, (1,))})
 
       # Apply gradients
       if T % 5 == 0:
-        # self._session.run(self._copy_gradients_ops[i])
-        # self._session.run(self.apply_gradients)
+        self._session.run(self._copy_gradients_ops[i])
+        self._session.run(self.apply_gradients)
 
         # Zero out accumulated gradients
         self._session.run(self._zero_out_gradients_ops[i])

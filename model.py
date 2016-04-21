@@ -18,8 +18,8 @@ def _variable_on_cpu(name, shape, initializer):
   return var
 
 def weight_variable(name, shape):
-    initializer = tf.contrib.layers.xavier_initializer_conv2d()
-    # initializer = tf.truncated_normal_initializer(0.01)
+    # initializer = tf.contrib.layers.xavier_initializer_conv2d()
+    initializer = tf.truncated_normal_initializer(.01)
     return _variable_on_cpu(name, shape, initializer)
 
 def bias_variable(name, shape):
@@ -68,7 +68,6 @@ def build_network(state):
       dim *= d
     reshape = tf.reshape(conv3, [1, dim])
 
-    # reshape = tf.reshape(conv3, [-1, 1600])
     weights = weight_variable('weights', shape=[dim, 512])
     biases = bias_variable('biases', shape=[512])
     fc1 = tf.nn.relu(tf.matmul(reshape, weights) + biases, name=scope.name)
