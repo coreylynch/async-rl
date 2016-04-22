@@ -8,8 +8,13 @@ from collections import deque
 from model import build_network, loss
 from environment import Environment
 
+
+STEPS_PER_EPOCH = 250000
+EPOCHS = 200
+STEPS_PER_TEST = 125000
+
 ACTIONS = 4
-NUM_CONCURRENT = 4 # 16
+NUM_CONCURRENT = 16
 GAMMA = 0.99
 NETWORK_UPDATE_FREQUENCY = 5
 TARGET_NETWORK_UPDATE_FREQUENCY = 10000
@@ -121,6 +126,7 @@ class GlobalThread(object):
     self.T = T
 
     tf.initialize_all_variables().run()
+    self.saver = tf.train.Saver()
 
   def _actor_learner_thread(self, i):
     """
@@ -138,7 +144,7 @@ class GlobalThread(object):
     epsilon = INITIAL_EXPLORATION
 
     # Main learning loop
-    T_max = 1000000
+    T_max = 50000000
     t = 0
     episode_reward = 0
     episode_max_q_value = 0
@@ -161,7 +167,7 @@ class GlobalThread(object):
       reward = np.clip(reward, -1, 1)
 
       # Compute y using target network
-      target_Q_s_a = self._session.run(self._target_network, feed_dict={self._state : state })
+      target_Q_s_a = self._session.run(self._target_network, feed_dict={self._state : new_state })
       if terminal:
         y = reward
       else:
@@ -170,9 +176,6 @@ class GlobalThread(object):
       # Build a one hot action vector
       actions_one_hot = np.zeros(environment.num_actions())
       actions_one_hot[action]=1.0
-
-      # Calculate loss
-      # loss = self._session.run(self._cost, feed_dict={self._state : state, self._a: [actions_one_hot], self._y: [y]})
 
       # Accumulate gradients
       self._session.run(self._assign_add_gradients_ops[i], feed_dict={self._state : state, self._a: [actions_one_hot], self._y: [y]})
@@ -206,24 +209,14 @@ class GlobalThread(object):
       # Perform asynchronous update
       if (t % NETWORK_UPDATE_FREQUENCY == 0) or terminal:
         self.async_apply_gradients(i)
-        # grad_vals = self._session.run([grad for grad, _ in self._global_grads_and_vars], feed_dict={self._state : state, self._a: [actions_one_hot], self._y: [y]})
-
-        # # Build a variable name-to-gradient dictionary.
-        # var_to_grad = {}
-        # for j in range(len(grad_vals)):
-        #     var = self._global_grads_and_vars[j][1]
-        #     var_to_grad[var.name] = grad_vals[j]
-
-        # feed_dict = {}
-        # for j, (grad, var) in enumerate(self._global_grads_and_vars):
-        #   feed_dict[self._placeholder_gradients[j][0]] = grad_vals[j]
-        # self._session.run(self._async_apply_gradients, feed_dict=feed_dict)
-
         self._session.run(self._clear_gradients_ops[i])
+
 
   def async_apply_gradients(self, i):
     """
-    Gets gradients as numpy arrays
+    Gets gradients as numpy arrays,
+    Runs shared async_apply_gradients handing in
+    numpy gradients to the placeholders
     """
     accum_grad_vars_i = self._accum_grad_vars[i]
     gradients = self._session.run(accum_grad_vars_i)
@@ -232,6 +225,7 @@ class GlobalThread(object):
     for j, (grad, var) in enumerate(self._global_grads_and_vars):
       feed_dict[self._placeholder_gradients[j][0]] = gradients[j]
     self._session.run(self._async_apply_gradients, feed_dict=feed_dict)
+
 
   def train(self):
     """
@@ -245,6 +239,14 @@ class GlobalThread(object):
     for t in workers:
       t.join()
 
+    # Periodically save the model
+      now = time.time()
+      if now - last_checkpoint_time > opts.checkpoint_interval:
+        self.saver.save(self._session,
+                        opts.save_path + "model",
+                        global_step=step.astype(int))
+        last_checkpoint_time = now
+
 def main(_):
   g = tf.Graph()
   with g.as_default(), tf.Session() as session:
@@ -252,7 +254,8 @@ def main(_):
       ale_io_lock = threading.Lock() # using a lock to avoid race condition on ALE init
       lock = threading.Lock()
       global_thread = GlobalThread(session, g, ale_io_lock, lock)
-      global_thread.train()
+      for _ in xrange(EPOCHS):
+        global_thread.train()
 
 if __name__ == "__main__":
   tf.app.run()
