@@ -1,6 +1,7 @@
 import tensorflow as tf
 
 ACTIONS = 4
+GAMMA = 0.99
 
 def _variable_on_cpu(name, shape, initializer):
   """Helper to create a Variable stored on CPU memory.
@@ -31,6 +32,97 @@ def bias_variable(shape):
 
 def conv2d(x, W, stride):
     return tf.nn.conv2d(x, W, strides = [1, stride, stride, 1], padding = "SAME")
+
+def build_target_network_concrete(state):
+    """
+    Following section 5.1
+    """
+    W_conv1 = weight_variable([8, 8, 4, 16])
+    b_conv1 = bias_variable([16])
+
+    W_conv2 = weight_variable([4, 4, 16, 32])
+    b_conv2 = bias_variable([32])
+    
+    W_fc1 = weight_variable([3872, 256])
+    b_fc1 = bias_variable([256])
+
+    W_fc2 = weight_variable([256, ACTIONS])
+    b_fc2 = bias_variable([ACTIONS])
+
+    # hidden layers
+    h_conv1 = tf.nn.relu(conv2d(state, W_conv1, 4) + b_conv1)
+
+    h_conv2 = tf.nn.relu(conv2d(h_conv1, W_conv2, 2) + b_conv2)
+
+    h_conv2_flat = tf.reshape(h_conv2, [-1, 3872])
+
+    h_fc1 = tf.nn.relu(tf.matmul(h_conv2_flat, W_fc1) + b_fc1)
+
+    # readout layer
+    q_values = tf.matmul(h_fc1, W_fc2) + b_fc2
+
+    return q_values, [W_conv1, b_conv1, W_conv2, b_conv2, W_fc1, b_fc1, W_fc2, b_fc2]
+
+def build_network_concrete(state):
+    """
+    Following section 5.1
+    """
+    W_conv1 = weight_variable([8, 8, 4, 16])
+    b_conv1 = bias_variable([16])
+
+    W_conv2 = weight_variable([4, 4, 16, 32])
+    b_conv2 = bias_variable([32])
+    
+    W_fc1 = weight_variable([3872, 256])
+    b_fc1 = bias_variable([256])
+
+    W_fc2 = weight_variable([256, ACTIONS])
+    b_fc2 = bias_variable([ACTIONS])
+
+    # hidden layers
+    h_conv1 = tf.nn.relu(conv2d(state, W_conv1, 4) + b_conv1)
+
+    h_conv2 = tf.nn.relu(conv2d(h_conv1, W_conv2, 2) + b_conv2)
+
+    h_conv2_flat = tf.reshape(h_conv2, [-1, 3872])
+
+    h_fc1 = tf.nn.relu(tf.matmul(h_conv2_flat, W_fc1) + b_fc1)
+
+    # readout layer
+    q_values = tf.matmul(h_fc1, W_fc2) + b_fc2
+
+    return q_values, [W_conv1, b_conv1, W_conv2, b_conv2, W_fc1, b_fc1, W_fc2, b_fc2]
+
+
+def build_network3(state):
+    """
+    Following section 5.1
+    """
+    W_conv1 = weight_variable([8, 8, 4, 16])
+    b_conv1 = bias_variable([16])
+
+    W_conv2 = weight_variable([4, 4, 16, 32])
+    b_conv2 = bias_variable([32])
+    
+    W_fc1 = weight_variable([3872, 256])
+    b_fc1 = bias_variable([256])
+
+    W_fc2 = weight_variable([256, ACTIONS])
+    b_fc2 = bias_variable([ACTIONS])
+
+    # hidden layers
+    h_conv1 = tf.nn.relu(conv2d(state, W_conv1, 4) + b_conv1)
+
+    h_conv2 = tf.nn.relu(conv2d(h_conv1, W_conv2, 2) + b_conv2)
+
+    h_conv2_flat = tf.reshape(h_conv2, [-1, 3872])
+
+    h_fc1 = tf.nn.relu(tf.matmul(h_conv2_flat, W_fc1) + b_fc1)
+
+    # readout layer
+    q_values = tf.matmul(h_fc1, W_fc2) + b_fc2
+
+    return q_values
 
 def build_network2(state):
     W_conv1 = weight_variable([8, 8, 4, 32])
@@ -151,13 +243,15 @@ def loss(q_values, a, y):
   # cost = tf.reduce_mean(tf.square(y - action_value))
   return cost
 
-def loss(q_values, a, y):
+def loss(q_values, target_q_values, a, reward, terminal):
   """Build the DQN Loss
 
   Args:
     q_values: op that outputs the q_values of the DQN, given some environment state
+    target_q_values: op that outputs the target_q_values of the DQN, given some environment state
     a: One hot vector representing chosen action at time t
-    y: placeholder op that outputs the target 
+    reward: instantaneous reward from executing action in state
+    terminal: 1 if new_state is terminal, 0 otherwise
   Returns:
     MSE loss
 
@@ -175,11 +269,13 @@ def loss(q_values, a, y):
   """
   CLIP_DELTA = 1
   action_value = tf.reduce_sum(tf.mul(q_values, a), reduction_indices = 1)
-  diff = y - action_value
-  quadratic_part = tf.minimum(abs(diff), CLIP_DELTA)
-  linear_part = abs(diff) - quadratic_part
-  cost = 0.5 * quadratic_part ** 2 + CLIP_DELTA * linear_part
-  
-  # action_value = tf.reduce_sum(tf.mul(q_values, a), reduction_indices = 1)
-  # cost = tf.reduce_mean(tf.square(y - action_value))
+  y = (terminal * reward) + ((1-terminal) * GAMMA * tf.reduce_max(target_q_values, reduction_indices=[1]))
+
+  if CLIP_DELTA > 0:
+    diff = (y - action_value)
+    quadratic_part = tf.minimum(abs(diff), CLIP_DELTA)
+    linear_part = abs(diff) - quadratic_part
+    cost = 0.5 * quadratic_part ** 2 + CLIP_DELTA * linear_part
+  else:
+    cost = tf.reduce_mean(tf.square(y - action_value))
   return cost

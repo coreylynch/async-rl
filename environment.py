@@ -81,7 +81,7 @@ class Environment(object):
     """
     reward = self.ale.act(action)
     self.ale.getScreenGrayscale(self.screen_buffer[self.index, ...])
-    self.index = (0 if self.index == 1 else 1)
+    self.index = (0 if self.index == 1 else 1) # flip the index
     return reward
 
   def _init_new_episode(self):
@@ -110,10 +110,11 @@ class Environment(object):
     return self.get_new_state()
 
   def _did_episode_end(self):
-    """Returns a boolean indicating whether or not
+    """Returns an indicator in {0,1} that says whether or not
     the game ended"""
     loss_of_life = self.ale.lives() < self.start_lives
     terminal = self.ale.game_over() or loss_of_life
+    terminal = 1.0 if terminal else 0.0
     return terminal
 
   def get_new_state(self):
@@ -147,7 +148,7 @@ class Environment(object):
     the agent. 
     Returns: - The instantaneous reward
              - The resulting preprocessed game state 
-             - A boolean indicating whether or 
+             - An indicator ({0,1}) whether or 
                not the executed action ended the game."""
     reward = self._repeat_action(self.min_action_set[action])
     new_state = self.get_new_state() # Rotates the state buffer by one

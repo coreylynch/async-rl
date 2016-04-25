@@ -4,7 +4,8 @@ import threading
 from skimage.transform import resize
 import numpy as np
 from collections import deque
-from model import build_network2, loss
+from model import build_network3, loss
+from model import build_network_concrete, build_target_network_concrete
 from environment import Environment
 
 STEPS_PER_EPOCH = 250000
@@ -12,7 +13,7 @@ EPOCHS = 200
 STEPS_PER_TEST = 125000
 
 ACTIONS = 4
-NUM_CONCURRENT = 16
+NUM_CONCURRENT = 1
 GAMMA = 0.99
 NETWORK_UPDATE_FREQUENCY = 5
 TARGET_NETWORK_UPDATE_FREQUENCY = 10000
@@ -50,23 +51,23 @@ class GlobalThread(object):
     """
     # Input Placeholders
     state = tf.placeholder("float", [None, RESIZED_WIDTH, RESIZED_HEIGHT, AGENT_HISTORY_LENGTH]) # Previous agent_history_length frames
+    new_state = tf.placeholder("float", [None, RESIZED_WIDTH, RESIZED_HEIGHT, AGENT_HISTORY_LENGTH]) # Previous agent_history_length frames
     a = tf.placeholder("float", [None, ACTIONS]) # One hot vector representing chosen action at time t
-    y = tf.placeholder("float", [None]) # Float holding y_t, the target value for chosen action at time t
-
-    # Set up network and target network
-    with tf.variable_scope('network_params') as scope:
-      network = build_network2(state)
-    with tf.variable_scope('target_network_params') as scope:
-      target_network = build_network2(state)
+    reward = tf.placeholder("float") # instantaneous reward
+    terminal = tf.placeholder("float") # 1 if terminal state, 0 otherwise
     
-    # Set up loss
-    cost = loss(network, a, y)
+    # TODO: remove this concrete stuff and put in keras networks
+    q_values, network_params = build_network_concrete(state)
+    target_q_values, target_network_params = build_target_network_concrete(new_state)
 
+    self._new_state = new_state
+    self._terminal = terminal
+    self._reward = reward
+
+    # Set up cost as a function of (s, a, r, s', terminal) tuples
+    cost = loss(q_values, target_q_values, a, reward, terminal)
+    
     # Op for periodically updating target network with online network weights
-    network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                     "network_params")
-    target_network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                        "target_network_params")
     self._reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
 
     # Global ops for doing async apply gradients
@@ -90,14 +91,11 @@ class GlobalThread(object):
     # Share these with the actor-learner threads
     self._state = state
     self._a = a
-    self._y = y
-    self._network = network
+    self._network = q_values
     self._network_params = network_params
-    self._target_network = target_network
     self._cost = cost
     self._compute_gradients = compute_gradients
     self._placeholder_gradients = placeholder_gradients
-    
 
     tf.initialize_all_variables().run()
     self.saver = tf.train.Saver()
@@ -134,7 +132,7 @@ class GlobalThread(object):
     episode_reward = 0
     episode_max_q_value = 0
     episode_steps = 0
-    episode_cost = 0
+    # episode_cost = 0
     while self._session.run(self.T) < T_max:
       # Get Q(s,a) values
       Q_s_a = self._session.run(self._network, feed_dict={self._state : state })
@@ -145,39 +143,32 @@ class GlobalThread(object):
       else:
         action =  np.argmax(Q_s_a)
 
+      # Scale down epsilon
+      if epsilon > FINAL_EXPLORATION:
+        epsilon -= (INITIAL_EXPLORATION - FINAL_EXPLORATION) / FINAL_EXPLORATION_FRAME
+
       # Execute the chosen action in the environment, observe new state and reward.
       (reward, new_state, terminal) = environment.execute(action)
       episode_reward += reward
       reward = np.clip(reward, -1, 1)
 
-      # Compute y using target network
-      target_Q_s_a = self._session.run(self._target_network, feed_dict={self._state : new_state })
-      if terminal:
-        y = reward
-      else:
-        y = reward + GAMMA * np.max(target_Q_s_a)
-
       # Build a one hot action vector
       actions_one_hot = np.zeros(environment.num_actions())
-      actions_one_hot[action]=1.0
+      actions_one_hot[action]=1
 
       # Accumulate gradients
-      grad_vals = self._session.run([grad for grad, _ in self._compute_gradients], feed_dict={self._state : state, self._a: [actions_one_hot], self._y: [y]})
-      # print np.max(Q_s_a)
-      # print y
+      feed_dict = {self._state : state, self._a: [actions_one_hot], self._reward : reward, self._new_state : new_state, self._terminal : terminal}
+      grad_vals = self._session.run([grad for grad, _ in self._compute_gradients], feed_dict=feed_dict)
       accum_gradients += grad_vals
-
-      # Report cost
-      cost = self._session.run(self._cost, feed_dict={self._state : state, self._a: [actions_one_hot], self._y: [y]})
-      episode_cost += cost
 
       # Collect some stats (TODO: put in tensorflow summaries)
       episode_max_q_value += np.max(Q_s_a)
       episode_steps += 1
 
-      # Scale down epsilon
-      if epsilon > FINAL_EXPLORATION:
-        epsilon -= (INITIAL_EXPLORATION - FINAL_EXPLORATION) / FINAL_EXPLORATION_FRAME
+      # T += 1
+      self._session.run(self._increment_T)
+      T = self._session.run(self.T)
+      t += 1
 
       # s = s'
       if not terminal:
@@ -188,18 +179,11 @@ class GlobalThread(object):
 
         # Print out some end-of-episode stats
         episode_average_max_q_value = episode_max_q_value / float(episode_steps)
-        episode_average_cost = episode_cost / float(episode_steps)
-        print "Reward: %i   Average Q(s,a): %.3f Cost: %.10f Epsilon: %.5f  Target epsilon: %.2f" % (episode_reward, episode_average_max_q_value, episode_average_cost, epsilon, FINAL_EXPLORATION)
+        print "Reward: %i  Average Q(s,a): %.3f Epsilon: %.5f  Target epsilon: %.2f Progress: %.4f" % (episode_reward, episode_average_max_q_value, epsilon, FINAL_EXPLORATION, float(t)/FINAL_EXPLORATION_FRAME)
         episode_reward = 0
         episode_max_q_value = 0 
         episode_cost = 0
         episode_steps = 0
-
-
-      # T += 1
-      self._session.run(self._increment_T)
-      T = self._session.run(self.T)
-      t += 1
 
       # Update the target network
       if T % TARGET_NETWORK_UPDATE_FREQUENCY == 0:
