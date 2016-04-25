@@ -140,7 +140,8 @@ class Environment(object):
     self.state_buffer.popleft()
     self.state_buffer.append(current_frame)
 
-    new_state = np.reshape(new_state, (1, 84, 84, 4))
+    # new_state = np.reshape(new_state, (1, 84, 84, 4))
+    new_state = np.reshape(new_state, (1, 4, 84, 84))
     return new_state
 
   def execute(self, action):

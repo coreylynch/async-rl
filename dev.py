@@ -4,16 +4,17 @@ import threading
 from skimage.transform import resize
 import numpy as np
 from collections import deque
-from model import build_network3, loss
-from model import build_network_concrete, build_target_network_concrete
+from model import build_network, loss
 from environment import Environment
+
+from keras import backend as K
 
 STEPS_PER_EPOCH = 250000
 EPOCHS = 200
 STEPS_PER_TEST = 125000
 
 ACTIONS = 4
-NUM_CONCURRENT = 1
+NUM_CONCURRENT = 10
 GAMMA = 0.99
 NETWORK_UPDATE_FREQUENCY = 5
 TARGET_NETWORK_UPDATE_FREQUENCY = 10000
@@ -50,15 +51,19 @@ class GlobalThread(object):
     """ Placeholder for the function that builds up the model 
     """
     # Input Placeholders
-    state = tf.placeholder("float", [None, RESIZED_WIDTH, RESIZED_HEIGHT, AGENT_HISTORY_LENGTH]) # Previous agent_history_length frames
-    new_state = tf.placeholder("float", [None, RESIZED_WIDTH, RESIZED_HEIGHT, AGENT_HISTORY_LENGTH]) # Previous agent_history_length frames
+    state = tf.placeholder("float", [None, AGENT_HISTORY_LENGTH, RESIZED_WIDTH, RESIZED_HEIGHT]) # Previous agent_history_length frames
+    new_state = tf.placeholder("float", [None, AGENT_HISTORY_LENGTH, RESIZED_WIDTH, RESIZED_HEIGHT])
     a = tf.placeholder("float", [None, ACTIONS]) # One hot vector representing chosen action at time t
     reward = tf.placeholder("float") # instantaneous reward
     terminal = tf.placeholder("float") # 1 if terminal state, 0 otherwise
-    
-    # TODO: remove this concrete stuff and put in keras networks
-    q_values, network_params = build_network_concrete(state)
-    target_q_values, target_network_params = build_target_network_concrete(new_state)
+
+    # Network and target network
+    q_values = build_network(state, 'network_params')
+    target_q_values = build_network(state, 'target_network_params')
+    network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                     "network_params")
+    target_network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                        "target_network_params")
 
     self._new_state = new_state
     self._terminal = terminal
@@ -216,11 +221,13 @@ class GlobalThread(object):
       workers.append(t)
     for t in workers:
       t.join()
+    # self._actor_learner_thread(0) # debug
 
 def main(_):
   g = tf.Graph()
   with g.as_default(), tf.Session() as session:
     with tf.device("/cpu:0"):
+      K.set_session(session)
       ale_io_lock = threading.Lock() # using a lock to avoid race condition on ALE init
       global_thread = GlobalThread(session, g, ale_io_lock)
       for _ in xrange(EPOCHS):
