@@ -234,8 +234,6 @@ def loss(q_values, target_q_values, action, reward, terminal):
   Returns:
     MSE loss
   """
-  CLIP_DELTA = 0 # not sure about this implementation yet
-
   # Q value of action taken in state s
   action_value = tf.reduce_sum(tf.mul(q_values, action), reduction_indices=1)
   

@@ -14,10 +14,11 @@ EPOCHS = 200
 STEPS_PER_TEST = 125000
 
 ACTIONS = 4
-NUM_CONCURRENT = 16
+NUM_CONCURRENT = 10
 GAMMA = 0.99
 NETWORK_UPDATE_FREQUENCY = 5
-TARGET_NETWORK_UPDATE_FREQUENCY = 10000
+# TARGET_NETWORK_UPDATE_FREQUENCY = 10000
+TARGET_NETWORK_UPDATE_FREQUENCY = 40000
 
 LEARNING_RATE = 0.00025
 
@@ -79,11 +80,12 @@ class GlobalThread(object):
     # then have each actor-learner call that op asyncronously, feeding in their accumulated
     # gradients as the placeholders.
     optimizer = tf.train.RMSPropOptimizer(learning_rate=LEARNING_RATE, momentum=GRADIENT_MOMENTUM, epsilon=MIN_SQUARED_GRADIENT, use_locking=False)
-    compute_gradients = optimizer.compute_gradients(cost, var_list=network_params)
+    grad_update = optimizer.minimize(cost, var_list=network_params)
+    # compute_gradients = optimizer.compute_gradients(cost, var_list=network_params)
     
-    placeholder_gradients = []
-    for grad_var in compute_gradients:
-       placeholder_gradients.append((tf.placeholder('float', shape=grad_var[1].get_shape()), grad_var[1]))
+    # placeholder_gradients = []
+    # for grad_var in compute_gradients:
+    #    placeholder_gradients.append((tf.placeholder('float', shape=grad_var[1].get_shape()), grad_var[1]))
     
     # Global counter variables
     T = tf.Variable(0)
@@ -99,9 +101,11 @@ class GlobalThread(object):
     self._network = q_values
     self._network_params = network_params
     self._cost = cost
-    self._compute_gradients = compute_gradients
-    self._placeholder_gradients = placeholder_gradients
-    self._async_apply_gradients = optimizer.apply_gradients(placeholder_gradients)
+
+    self._async_gradient_update = grad_update
+    # self._compute_gradients = compute_gradients
+    # self._placeholder_gradients = placeholder_gradients
+    # self._async_apply_gradients = optimizer.apply_gradients(placeholder_gradients)
 
     tf.initialize_all_variables().run()
     self.saver = tf.train.Saver()
@@ -140,7 +144,7 @@ class GlobalThread(object):
     print "Thread ", i, "FINAL_EXPLORATION: ", FINAL_EXPLORATION
 
     # Initialize actor-learner's gradients
-    accum_gradients = np.array([np.zeros(var.get_shape().as_list(), dtype=np.float32) for var in self._network_params])
+    # accum_gradients = np.array([np.zeros(var.get_shape().as_list(), dtype=np.float32) for var in self._network_params])
 
     # Main learning loop
     T_max = 50000000
@@ -150,7 +154,7 @@ class GlobalThread(object):
     episode_steps = 0
     while self._session.run(self.T) < T_max:
       # Get Q(s,a) values
-      Q_s_a = self._session.run(self._network, feed_dict={self._state : state})
+      Q_s_a = self._session.run(self._network, feed_dict={self._state : state})[0]
 
       # Take action a according to the e-greedy policy
       if rng.rand() < epsilon:
@@ -158,9 +162,12 @@ class GlobalThread(object):
       else:
         a =  np.argmax(Q_s_a)
 
+      T = self._session.run(self.T)
       # Scale down epsilon
       if epsilon > FINAL_EXPLORATION:
-        epsilon -= (INITIAL_EXPLORATION - FINAL_EXPLORATION) / FINAL_EXPLORATION_FRAME
+        # Decay as a function of all seen frames
+        epsilon = INITIAL_EXPLORATION - ((INITIAL_EXPLORATION-FINAL_EXPLORATION) * float(T)/FINAL_EXPLORATION_FRAME)
+        # epsilon -= (INITIAL_EXPLORATION - FINAL_EXPLORATION) / FINAL_EXPLORATION_FRAME
 
       # Execute the chosen action in the environment, 
       # observe new state, reward, and indicator for
@@ -179,8 +186,9 @@ class GlobalThread(object):
                    self._reward : reward, 
                    self._new_state : new_state, 
                    self._terminal : terminal}
-      gradients = self._session.run([grad for grad, _ in self._compute_gradients], feed_dict=feed_dict)
-      accum_gradients += gradients
+      self._session.run(self._async_gradient_update, feed_dict=feed_dict)
+      # gradients = self._session.run([grad for grad, _ in self._compute_gradients], feed_dict=feed_dict)
+      # accum_gradients += gradients
 
       # Collect some stats (TODO: put in tensorflow summaries)
       episode_max_q_value += np.max(Q_s_a)
@@ -188,7 +196,7 @@ class GlobalThread(object):
 
       # T += 1
       self._session.run(self._increment_T)
-      T = self._session.run(self.T)
+      # T = self._session.run(self.T)
       t += 1
 
       # s = s'
@@ -200,7 +208,7 @@ class GlobalThread(object):
 
         # Print out some end-of-episode stats
         episode_average_max_q_value = episode_max_q_value / float(episode_steps)
-        print "Reward: %i  Average Q(s,a): %.3f Epsilon: %.5f  Target epsilon: %.2f Progress: %.4f T: %i" % (episode_reward, episode_average_max_q_value, epsilon, FINAL_EXPLORATION, float(t)/FINAL_EXPLORATION_FRAME, T)
+        print "Reward: %i  Average Q(s,a): %.3f Epsilon: %.5f  Target epsilon: %.2f Progress: %.4f T: %i" % (episode_reward, episode_average_max_q_value, epsilon, FINAL_EXPLORATION, float(T)/FINAL_EXPLORATION_FRAME, T)
         episode_reward = 0
         episode_max_q_value = 0 
         episode_cost = 0
@@ -211,20 +219,20 @@ class GlobalThread(object):
         self._session.run(self._reset_target_network_params)
 
       # Perform asynchronous update
-      if (t % NETWORK_UPDATE_FREQUENCY == 0) or terminal:
-        self.async_apply_gradients(accum_gradients)
-        accum_gradients *= 0 # Zero out accumulated gradients
+      # if (t % NETWORK_UPDATE_FREQUENCY == 0) or terminal:
+      #   self.async_apply_gradients(accum_gradients)
+      #   accum_gradients *= 0 # Zero out accumulated gradients
 
-  def async_apply_gradients(self, accum_gradients):
-    """
-    Gets gradients as numpy arrays,
-    Runs shared async_apply_gradients handing in
-    numpy gradients to the placeholders
-    """
-    feed_dict = {}
-    for j, (grad, var) in enumerate(self._compute_gradients):
-      feed_dict[self._placeholder_gradients[j][0]] = accum_gradients[j]
-    self._session.run(self._async_apply_gradients, feed_dict=feed_dict)
+  # def async_apply_gradients(self, accum_gradients):
+  #   """
+  #   Gets gradients as numpy arrays,
+  #   Runs shared async_apply_gradients handing in
+  #   numpy gradients to the placeholders
+  #   """
+  #   feed_dict = {}
+  #   for j, (grad, var) in enumerate(self._compute_gradients):
+  #     feed_dict[self._placeholder_gradients[j][0]] = accum_gradients[j]
+  #   self._session.run(self._async_apply_gradients, feed_dict=feed_dict)
 
   def train(self):
     """
