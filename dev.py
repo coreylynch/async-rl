@@ -14,7 +14,7 @@ EPOCHS = 200
 STEPS_PER_TEST = 125000
 
 ACTIONS = 4
-NUM_CONCURRENT = 10
+NUM_CONCURRENT = 16
 GAMMA = 0.99
 NETWORK_UPDATE_FREQUENCY = 5
 TARGET_NETWORK_UPDATE_FREQUENCY = 10000
@@ -44,68 +44,74 @@ class GlobalThread(object):
     self._graph = graph
     self._ale_io_lock = ale_io_lock
     self._build_graph()
-    self.rng = np.random.RandomState(123456)
     self._session.run(self._reset_target_network_params)
   
   def _build_graph(self):
-    """ Placeholder for the function that builds up the model 
+    """ Build the graph describing shared networks, loss, optimizer, etc.
     """
     # Input Placeholders
-    state = tf.placeholder("float", [None, AGENT_HISTORY_LENGTH, RESIZED_WIDTH, RESIZED_HEIGHT]) # Previous agent_history_length frames
+    state = tf.placeholder("float", [None, AGENT_HISTORY_LENGTH, RESIZED_WIDTH, RESIZED_HEIGHT])
     new_state = tf.placeholder("float", [None, AGENT_HISTORY_LENGTH, RESIZED_WIDTH, RESIZED_HEIGHT])
-    a = tf.placeholder("float", [None, ACTIONS]) # One hot vector representing chosen action at time t
+    action = tf.placeholder("float", [None, ACTIONS]) # One hot vector representing chosen action at time t
     reward = tf.placeholder("float") # instantaneous reward
     terminal = tf.placeholder("float") # 1 if terminal state, 0 otherwise
 
     # Network and target network
-    q_values = build_network(state, 'network_params')
-    target_q_values = build_network(state, 'target_network_params')
+    q_values = build_network(state, "network_params") # Q(s,a)
+    target_q_values = build_network(new_state, "target_network_params") # Q-(s',a)
+
+    self._new_state = new_state
+    self._reward = reward
+    self._terminal = terminal
+
+    # Set up cost as a function of (s, a, r, s', terminal) tuples.
+    cost = loss(q_values, target_q_values, action, reward, terminal)
+
+    # Op for periodically updating target network with online network weights.
     network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                      "network_params")
     target_network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                        "target_network_params")
-
-    self._new_state = new_state
-    self._terminal = terminal
-    self._reward = reward
-
-    # Set up cost as a function of (s, a, r, s', terminal) tuples
-    cost = loss(q_values, target_q_values, a, reward, terminal)
-    
-    # Op for periodically updating target network with online network weights
+                                        "target_network_params")    
     self._reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
 
-    # Global ops for doing async apply gradients
-    # Basically, set up a shared global op that applies placeholder gradients,
-    # then have each actor-learner call that op asyncronously, feeding in their accumulated gradients
-    # as the placeholder gradients.
+    # Op for asyncronously computing/applying gradients.
+    # Basically, set up an op in the main thread that applies some placeholder gradients,
+    # then have each actor-learner call that op asyncronously, feeding in their accumulated
+    # gradients as the placeholders.
     optimizer = tf.train.RMSPropOptimizer(learning_rate=LEARNING_RATE, momentum=GRADIENT_MOMENTUM, epsilon=MIN_SQUARED_GRADIENT, use_locking=False)
     compute_gradients = optimizer.compute_gradients(cost, var_list=network_params)
     
     placeholder_gradients = []
     for grad_var in compute_gradients:
        placeholder_gradients.append((tf.placeholder('float', shape=grad_var[1].get_shape()), grad_var[1]))
-
-    self._async_apply_gradients = optimizer.apply_gradients(placeholder_gradients)
     
-    # Global counter variable
+    # Global counter variables
     T = tf.Variable(0)
+    epoch = tf.Variable(0)
     self.T = T
     self._increment_T = T.assign_add(1)
+    self._epoch = epoch
+    self._increment_epoch = epoch.assign_add(1)
 
-    # Share these with the actor-learner threads
+    # Share these placeholders/methods with the actor-learner threads
     self._state = state
-    self._a = a
+    self._action = action
     self._network = q_values
     self._network_params = network_params
     self._cost = cost
     self._compute_gradients = compute_gradients
     self._placeholder_gradients = placeholder_gradients
+    self._async_apply_gradients = optimizer.apply_gradients(placeholder_gradients)
 
     tf.initialize_all_variables().run()
     self.saver = tf.train.Saver()
 
   def _sample_final_epsilon(self):
+    """
+    Sample a final epsilon value to anneal towards
+    from a discrete distribution.
+    Called by each actor-learner thread.
+    """
     final_epsilons = np.array([.1,.01,.5])
     probabilities = np.array([0.4,0.3,0.3])
     return np.random.choice(final_epsilons, 1, p=list(probabilities))[0]
@@ -117,9 +123,14 @@ class GlobalThread(object):
     - Run a training loop, periodically
       sending asyncronous gradient updates to main model
     """
-    # Initialize this thread's agent's environment
-    environment = Environment(self._ale_io_lock)
-    
+    # Seed this thread's random behavior based on epoch and thread_id i
+    curr_epoch = self._session.run(self._epoch)
+    thread_seed = curr_epoch+i
+    rng = np.random.RandomState(thread_seed)
+
+    # Initialize actor-learner's environment
+    environment = Environment(ale_io_lock=self._ale_io_lock, thread_seed=thread_seed)
+
     # Get initial game state
     state = environment.get_initial_state()
 
@@ -128,7 +139,7 @@ class GlobalThread(object):
 
     print "Thread ", i, "FINAL_EXPLORATION: ", FINAL_EXPLORATION
 
-    # Thread specific gradients
+    # Initialize actor-learner's gradients
     accum_gradients = np.array([np.zeros(var.get_shape().as_list(), dtype=np.float32) for var in self._network_params])
 
     # Main learning loop
@@ -137,34 +148,39 @@ class GlobalThread(object):
     episode_reward = 0
     episode_max_q_value = 0
     episode_steps = 0
-    # episode_cost = 0
     while self._session.run(self.T) < T_max:
       # Get Q(s,a) values
-      Q_s_a = self._session.run(self._network, feed_dict={self._state : state })
+      Q_s_a = self._session.run(self._network, feed_dict={self._state : state})
 
       # Take action a according to the e-greedy policy
-      if self.rng.rand() < epsilon:
-        action = self.rng.randint(0, environment.num_actions())
+      if rng.rand() < epsilon:
+        a = rng.randint(0, environment.num_actions())
       else:
-        action =  np.argmax(Q_s_a)
+        a =  np.argmax(Q_s_a)
 
       # Scale down epsilon
       if epsilon > FINAL_EXPLORATION:
         epsilon -= (INITIAL_EXPLORATION - FINAL_EXPLORATION) / FINAL_EXPLORATION_FRAME
 
-      # Execute the chosen action in the environment, observe new state and reward.
-      (reward, new_state, terminal) = environment.execute(action)
+      # Execute the chosen action in the environment, 
+      # observe new state, reward, and indicator for
+      # whether the episode terminated.
+      (reward, new_state, terminal) = environment.execute(a)
       episode_reward += reward
       reward = np.clip(reward, -1, 1)
 
       # Build a one hot action vector
       actions_one_hot = np.zeros(environment.num_actions())
-      actions_one_hot[action]=1
+      actions_one_hot[a]=1
 
       # Accumulate gradients
-      feed_dict = {self._state : state, self._a: [actions_one_hot], self._reward : reward, self._new_state : new_state, self._terminal : terminal}
-      grad_vals = self._session.run([grad for grad, _ in self._compute_gradients], feed_dict=feed_dict)
-      accum_gradients += grad_vals
+      feed_dict = {self._state : state, 
+                   self._action: [actions_one_hot], 
+                   self._reward : reward, 
+                   self._new_state : new_state, 
+                   self._terminal : terminal}
+      gradients = self._session.run([grad for grad, _ in self._compute_gradients], feed_dict=feed_dict)
+      accum_gradients += gradients
 
       # Collect some stats (TODO: put in tensorflow summaries)
       episode_max_q_value += np.max(Q_s_a)
@@ -184,7 +200,7 @@ class GlobalThread(object):
 
         # Print out some end-of-episode stats
         episode_average_max_q_value = episode_max_q_value / float(episode_steps)
-        print "Reward: %i  Average Q(s,a): %.3f Epsilon: %.5f  Target epsilon: %.2f Progress: %.4f" % (episode_reward, episode_average_max_q_value, epsilon, FINAL_EXPLORATION, float(t)/FINAL_EXPLORATION_FRAME)
+        print "Reward: %i  Average Q(s,a): %.3f Epsilon: %.5f  Target epsilon: %.2f Progress: %.4f T: %i" % (episode_reward, episode_average_max_q_value, epsilon, FINAL_EXPLORATION, float(t)/FINAL_EXPLORATION_FRAME, T)
         episode_reward = 0
         episode_max_q_value = 0 
         episode_cost = 0

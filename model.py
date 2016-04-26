@@ -8,11 +8,11 @@ GAMMA = 0.99
 def build_network(state, namespace):
   with tf.device("/cpu:0"):
     with tf.variable_scope(namespace) as scope:
-        model = Convolution2D(nb_filter=16, nb_row=8, nb_col=8, subsample=(4,4), init='he_uniform', activation='relu', border_mode='same', name='conv1')(state)
-        model = Convolution2D(nb_filter=32, nb_row=4, nb_col=4, subsample=(2,2), init='he_uniform', activation='relu', border_mode='same', name='conv2')(model)
-        model = Flatten()(model)
-        model = Dense(output_dim=256, init='he_uniform', activation='relu')(model)
-        q_values = Dense(output_dim=ACTIONS, init='he_uniform', activation='linear')(model)
+      model = Convolution2D(nb_filter=16, nb_row=8, nb_col=8, subsample=(4,4), init='he_uniform', activation='relu', border_mode='same')(state)
+      model = Convolution2D(nb_filter=32, nb_row=4, nb_col=4, subsample=(2,2), init='he_uniform', activation='relu', border_mode='same')(model)
+      model = Flatten()(model)
+      model = Dense(output_dim=256, init='he_uniform', activation='relu')(model)
+      q_values = Dense(output_dim=ACTIONS, init='he_uniform', activation='linear')(model)
   return q_values
 
 # def _variable_on_cpu(name, shape, initializer):
@@ -222,39 +222,30 @@ def build_network(state, namespace):
 
 #   return q_values
 
-def loss(q_values, target_q_values, a, reward, terminal):
-  """Build the DQN Loss
+def loss(q_values, target_q_values, action, reward, terminal):
+  """Build the one-step DQN Loss
 
   Args:
     q_values: op that outputs the q_values of the DQN, given some environment state
     target_q_values: op that outputs the target_q_values of the DQN, given some environment state
-    a: One hot vector representing chosen action at time t
+    action: One hot vector representing chosen action at time t
     reward: instantaneous reward from executing action in state
     terminal: 1 if new_state is terminal, 0 otherwise
   Returns:
     MSE loss
-
-  Clip delta implementation taken from deep_q_rl: Author explains:
-  "If we simply take the squared clipped diff as our loss,
-  then the gradient will be zero whenever the diff exceeds
-  the clip bounds. To avoid this, we extend the loss
-  linearly past the clip point to keep the gradient constant
-  in that regime.
-  
-  This is equivalent to declaring d loss/d q_vals to be
-  equal to the clipped diff, then backpropagating from
-  there, which is what the DeepMind implementation does."
-
   """
-  CLIP_DELTA = 1
-  action_value = tf.reduce_sum(tf.mul(q_values, a), reduction_indices = 1)
-  y = (terminal * reward) + ((1-terminal) * GAMMA * tf.reduce_max(target_q_values, reduction_indices=[1]))
+  CLIP_DELTA = 0 # not sure about this implementation yet
 
-  if CLIP_DELTA > 0:
-    diff = (y - action_value)
-    quadratic_part = tf.minimum(abs(diff), CLIP_DELTA)
-    linear_part = abs(diff) - quadratic_part
-    cost = 0.5 * quadratic_part ** 2 + CLIP_DELTA * linear_part
-  else:
-    cost = tf.reduce_mean(tf.square(y - action_value))
+  # Q value of action taken in state s
+  action_value = tf.reduce_sum(tf.mul(q_values, action), reduction_indices=1)
+  
+  # Compute y
+  # if terminal:
+  #   y = r
+  # else:
+  #   y = r + gamma * max target_q_s_a
+  y = reward + (1-terminal) * GAMMA * tf.reduce_max(target_q_values, reduction_indices=[1])
+  
+  cost = tf.reduce_mean(tf.square(y - action_value))
+
   return cost
