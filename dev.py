@@ -17,7 +17,6 @@ ACTIONS = 4
 NUM_CONCURRENT = 10
 GAMMA = 0.99
 NETWORK_UPDATE_FREQUENCY = 5
-# TARGET_NETWORK_UPDATE_FREQUENCY = 10000
 TARGET_NETWORK_UPDATE_FREQUENCY = 40000
 
 LEARNING_RATE = 0.00025
@@ -76,16 +75,8 @@ class GlobalThread(object):
     self._reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
 
     # Op for asyncronously computing/applying gradients.
-    # Basically, set up an op in the main thread that applies some placeholder gradients,
-    # then have each actor-learner call that op asyncronously, feeding in their accumulated
-    # gradients as the placeholders.
     optimizer = tf.train.RMSPropOptimizer(learning_rate=LEARNING_RATE, momentum=GRADIENT_MOMENTUM, epsilon=MIN_SQUARED_GRADIENT, use_locking=False)
     grad_update = optimizer.minimize(cost, var_list=network_params)
-    # compute_gradients = optimizer.compute_gradients(cost, var_list=network_params)
-    
-    # placeholder_gradients = []
-    # for grad_var in compute_gradients:
-    #    placeholder_gradients.append((tf.placeholder('float', shape=grad_var[1].get_shape()), grad_var[1]))
     
     # Global counter variables
     T = tf.Variable(0)
@@ -100,18 +91,14 @@ class GlobalThread(object):
     self._action = action
     self._network = q_values
     self._network_params = network_params
-    self._cost = cost
-
     self._async_gradient_update = grad_update
-    # self._compute_gradients = compute_gradients
-    # self._placeholder_gradients = placeholder_gradients
-    # self._async_apply_gradients = optimizer.apply_gradients(placeholder_gradients)
 
     tf.initialize_all_variables().run()
     self.saver = tf.train.Saver()
 
   def _sample_final_epsilon(self):
     """
+    Actor-learner helper
     Sample a final epsilon value to anneal towards
     from a discrete distribution.
     Called by each actor-learner thread.
@@ -119,6 +106,18 @@ class GlobalThread(object):
     final_epsilons = np.array([.1,.01,.5])
     probabilities = np.array([0.4,0.3,0.3])
     return np.random.choice(final_epsilons, 1, p=list(probabilities))[0]
+
+  def _unpack_recent_history(self, recent_history):
+    """
+    Actor-learner helper
+    Unpack the recent_history tuples into separate numpy array variables 
+    """
+    states = np.reshape(np.array([h[0] for h in recent_history]), (NETWORK_UPDATE_FREQUENCY, AGENT_HISTORY_LENGTH, RESIZED_WIDTH, RESIZED_HEIGHT))
+    actions = np.array([h[1] for h in recent_history])
+    rewards = np.array([h[2] for h in recent_history])
+    new_states = np.reshape(np.array([h[3] for h in recent_history]), (NETWORK_UPDATE_FREQUENCY, AGENT_HISTORY_LENGTH, RESIZED_WIDTH, RESIZED_HEIGHT))
+    terminals = np.array([h[4] for h in recent_history])
+    return (states, actions, rewards, new_states, terminals)
 
   def _actor_learner_thread(self, i):
     """
@@ -143,8 +142,8 @@ class GlobalThread(object):
 
     print "Thread ", i, "FINAL_EXPLORATION: ", FINAL_EXPLORATION
 
-    # Initialize actor-learner's gradients
-    # accum_gradients = np.array([np.zeros(var.get_shape().as_list(), dtype=np.float32) for var in self._network_params])
+    # Buffer to keep NETWORK_UPDATE_FREQUENCY recent state transitions
+    recent_history = deque()
 
     # Main learning loop
     T_max = 50000000
@@ -162,7 +161,9 @@ class GlobalThread(object):
       else:
         a =  np.argmax(Q_s_a)
 
+      # Get current global timestep
       T = self._session.run(self.T)
+
       # Scale down epsilon
       if epsilon > FINAL_EXPLORATION:
         # Decay as a function of all seen frames
@@ -180,23 +181,28 @@ class GlobalThread(object):
       actions_one_hot = np.zeros(environment.num_actions())
       actions_one_hot[a]=1
 
-      # Accumulate gradients
-      feed_dict = {self._state : state, 
-                   self._action: [actions_one_hot], 
-                   self._reward : reward, 
-                   self._new_state : new_state, 
-                   self._terminal : terminal}
-      self._session.run(self._async_gradient_update, feed_dict=feed_dict)
-      # gradients = self._session.run([grad for grad, _ in self._compute_gradients], feed_dict=feed_dict)
-      # accum_gradients += gradients
+      # If we have NETWORK_UPDATE_FREQUENCY (s, a, r, s', t) tuples, do an async update, otherwise
+      # keep collecting tuples
+      if len(recent_history) == NETWORK_UPDATE_FREQUENCY:
+        states, actions, rewards, new_states, terminals = self._unpack_recent_history(recent_history)
+        feed_dict = {self._state : states, 
+                     self._action: actions, 
+                     self._reward : rewards, 
+                     self._new_state : new_states, 
+                     self._terminal : terminals}
+        self._session.run(self._async_gradient_update, feed_dict=feed_dict)
+
+        # Clear the recent_history queue
+        for _ in range(NETWORK_UPDATE_FREQUENCY):
+          recent_history.pop()
+      else:
+        recent_history.append((state, actions_one_hot, reward, new_state, terminal))
 
       # Collect some stats (TODO: put in tensorflow summaries)
       episode_max_q_value += np.max(Q_s_a)
       episode_steps += 1
 
-      # T += 1
-      self._session.run(self._increment_T)
-      # T = self._session.run(self.T)
+      self._session.run(self._increment_T) # T += 1
       t += 1
 
       # s = s'
@@ -204,35 +210,18 @@ class GlobalThread(object):
         state = new_state
       else:
         # Episode ended, so next state is the next episode's initial state
-        state = environment.get_initial_state()
+        state = environment.get_initial_state() # starts new episode
 
         # Print out some end-of-episode stats
         episode_average_max_q_value = episode_max_q_value / float(episode_steps)
         print "Reward: %i  Average Q(s,a): %.3f Epsilon: %.5f  Target epsilon: %.2f Progress: %.4f T: %i" % (episode_reward, episode_average_max_q_value, epsilon, FINAL_EXPLORATION, float(T)/FINAL_EXPLORATION_FRAME, T)
         episode_reward = 0
         episode_max_q_value = 0 
-        episode_cost = 0
         episode_steps = 0
 
       # Update the target network
       if T % TARGET_NETWORK_UPDATE_FREQUENCY == 0:
         self._session.run(self._reset_target_network_params)
-
-      # Perform asynchronous update
-      # if (t % NETWORK_UPDATE_FREQUENCY == 0) or terminal:
-      #   self.async_apply_gradients(accum_gradients)
-      #   accum_gradients *= 0 # Zero out accumulated gradients
-
-  # def async_apply_gradients(self, accum_gradients):
-  #   """
-  #   Gets gradients as numpy arrays,
-  #   Runs shared async_apply_gradients handing in
-  #   numpy gradients to the placeholders
-  #   """
-  #   feed_dict = {}
-  #   for j, (grad, var) in enumerate(self._compute_gradients):
-  #     feed_dict[self._placeholder_gradients[j][0]] = accum_gradients[j]
-  #   self._session.run(self._async_apply_gradients, feed_dict=feed_dict)
 
   def train(self):
     """
@@ -251,7 +240,7 @@ def main(_):
   g = tf.Graph()
   with g.as_default(), tf.Session() as session:
     with tf.device("/cpu:0"):
-      K.set_session(session)
+      K.set_session(session) # set Keras session
       ale_io_lock = threading.Lock() # using a lock to avoid race condition on ALE init
       global_thread = GlobalThread(session, g, ale_io_lock)
       for _ in xrange(EPOCHS):
