@@ -48,7 +48,7 @@ class GlobalThread(object):
     self._session = session
     self._graph = graph
     self._build_graph()
-    self._session.run(self._reset_target_network_params)
+    self._session.run(self.graph_ops['reset_target_network'])
     self._envs = [gym.make(GAME) for i in range(NUM_CONCURRENT)]
 
   def _build_graph(self):
@@ -75,28 +75,43 @@ class GlobalThread(object):
                                      "network_params")
     target_network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                         "target_network_params")    
-    self._reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
+    # self._reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
+    reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
 
     # Op for asyncronously computing/applying gradients.
     optimizer = tf.train.RMSPropOptimizer(learning_rate=LEARNING_RATE, momentum=GRADIENT_MOMENTUM, epsilon=MIN_SQUARED_GRADIENT, use_locking=False)
     grad_update = optimizer.minimize(cost, var_list=network_params)
     
     # Global counter variables
-    self.T = tf.Variable(0) # global_step
-    self._increment_T = self.T.assign_add(1)
-    self._reset_T = self.T.assign(0)
-    self._epoch = tf.Variable(0)
-    self._increment_epoch = self._epoch.assign_add(1)
+    T = tf.Variable(0)
+    increment_T = T.assign_add(1)
+    # self._increment_T = self.T.assign_add(1)
+    # self._reset_T = self.T.assign(0)
+    # self._epoch = tf.Variable(0)
+    # self._increment_epoch = self._epoch.assign_add(1)
     
     # Share these placeholders/methods with the actor-learner threads
-    self._state = state
-    self._action = action
-    self._reward = reward
-    self._new_state = new_state
-    self._terminal = terminal
+    self.graph_ops = {'network': q_values,
+                      'target_network': target_q_values,
+                      'state': state,
+                      'action': action, 
+                      'reward': reward, 
+                      'new_state': new_state,
+                      'terminal': terminal,
+                      'async_gradient_update': grad_update,
+                      'reset_target_network': reset_target_network_params,
+                      'T': T,
+                      'increment_T': increment_T
+                      }
 
-    self._network = q_values
-    self._async_gradient_update = grad_update
+    # self._state = state
+    # self._action = action
+    # self._reward = reward
+    # self._new_state = new_state
+    # self._terminal = terminal
+
+    # self._network = q_values
+    # self._async_gradient_update = grad_update
 
     self._setup_counters()
 
@@ -170,26 +185,31 @@ class GlobalThread(object):
     - Run a training loop, periodically
       sending asyncronous gradient updates to main model
     """
-    # Seed this thread's random behavior based on epoch and thread_id i
-    # curr_epoch = self._session.run(self._epoch)
-    # thread_seed = curr_epoch+i
-    # rng = np.random.RandomState(thread_seed)
-
-    # Initialize actor-learner's environment
-    # environment = Environment(ale_io_lock=self._ale_io_lock, thread_seed=thread_seed)
+    # Initialize actor-learner
     env = self._envs[i]
-    final_epsilon = 1
-    actor_learner = ActorLearner(env.action_space, final_epsilon)
+    final_epsilon = self._sample_final_epsilon()
+    actor_learner = ActorLearner(env.action_space, 
+                                 self._session, 
+                                 self.graph_ops, 
+                                 final_epsilon,
+                                 FINAL_EXPLORATION_FRAME)
+    
     for i_episode in xrange(NUM_EPISODES):
-      # Get initial game state
+      # Get initial game observation
       observation = env.reset()
+      # Have actor-learner build up it's initial state
       actor_learner.build_initial_state(observation)
       reward = 0
       done = False
       ep_reward = 0
       for j in xrange(MAX_STEPS):
+        # Actor-learner selects action based on e-greedy policy
         action = actor_learner.act(observation, reward, done)
+        print action
+        
+        # Gym excecutes action in game environment on behalf of actor-learner
         observation, reward, done, info = env.step(action)
+        
         ep_reward += reward
         print ep_reward
         if done:

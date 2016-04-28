@@ -15,25 +15,44 @@ class ActorLearner(object):
       updating the global network asyncronously.
 
     """
-    def __init__(self, action_space, final_epsilon):
+    def __init__(self, action_space, session, graph_ops,
+                 final_epsilon, final_epsilon_frame):
+        self.session = session # tf session
+        self.graph_ops = graph_ops # dict of tf graph ops
+
         self.action_space = action_space
         self.starting_epsilon = 1
+        self.epsilon = self.starting_epsilon
         self.final_epsilon = final_epsilon
+        self.final_epsilon_frame = final_epsilon_frame
 
         self.state_buffer = deque()
         self.agent_history_length = 4
         self.resized_width = 84
         self.resized_height = 84
 
+        self.rng = np.random.RandomState(np.random.randint(10000))
+
     def act(self, observation, reward, done):
         """
         Choose action based on current state and e-greedy policy
         """
+        # Get current state
         state = self._get_state(observation)
-        print np.shape(state)
+        
+        # Get Q(s,a) values
+        Q_s_a = self._run('network', {'state':state})[0]
+
+        # E-greedy action selection
+        a = self._select_action_e_greedy(Q_s_a)
+
+        # Scale down epsilon
+        self._decay_epsilon()
+        # T+=1
+        self._run('increment_T')
 
         # For now, return random action
-        return self.action_space.sample()
+        return a
 
     def build_initial_state(self, observation):
         """
@@ -43,6 +62,34 @@ class ActorLearner(object):
         self.state_buffer = deque() # clear the state buffer
         for _ in xrange(self.agent_history_length-1):
             self.state_buffer.append(processed_frame)
+
+    def _select_action_e_greedy(self, Q_s_a):
+        if self.rng.rand() < self.epsilon:
+            a = self.rng.randint(0, self.action_space.n)
+        else:
+            a = np.argmax(Q_s_a)
+        return a
+
+    def _decay_epsilon(self):
+        """
+        Scale down epsilon based on global step count T
+        """
+        T = self._run('T')
+        if self.epsilon > self.final_epsilon:
+          self.epsilon = self.starting_epsilon - ((self.starting_epsilon-self.final_epsilon) * float(T)/self.final_epsilon_frame)
+
+    def _run(self, op_name, p_name_to_p_value=None):
+        """
+        Runs a specified TensorFlow op, optionally with a map of
+        placeholder names to placeholder values.
+
+        E.g. self._run('network', {'state': state}) forwards the network
+        """
+        if p_name_to_p_value is None:
+            return self.session.run(self.graph_ops[op_name])
+        else:
+            feed_dict = dict([(self.graph_ops[i], p_name_to_p_value[i]) for i in p_name_to_p_value])
+            return self.session.run(self.graph_ops[op_name], feed_dict=feed_dict)
 
     def _get_state(self, observation):
         # Preprocess the current frame
