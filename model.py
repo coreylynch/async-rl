@@ -2,17 +2,16 @@ import tensorflow as tf
 from keras import backend as K
 from keras.layers import Convolution2D, Flatten, Dense
 
-ACTIONS = 4
 GAMMA = 0.99
 
-def build_network(state, namespace):
+def build_network(state, namespace, num_actions):
   with tf.device("/cpu:0"):
     with tf.variable_scope(namespace) as scope:
       model = Convolution2D(nb_filter=16, nb_row=8, nb_col=8, subsample=(4,4), init='he_uniform', activation='relu', border_mode='same')(state)
       model = Convolution2D(nb_filter=32, nb_row=4, nb_col=4, subsample=(2,2), init='he_uniform', activation='relu', border_mode='same')(model)
       model = Flatten()(model)
       model = Dense(output_dim=256, init='he_uniform', activation='relu')(model)
-      q_values = Dense(output_dim=ACTIONS, init='he_uniform', activation='linear')(model)
+      q_values = Dense(output_dim=num_actions, init='he_uniform', activation='linear')(model)
   return q_values
 
 def loss(q_values, target_q_values, action, reward, terminal):
@@ -38,5 +37,6 @@ def loss(q_values, target_q_values, action, reward, terminal):
   y = reward + (1-terminal) * GAMMA * tf.reduce_max(target_q_values, reduction_indices=[1])
   
   cost = tf.reduce_mean(tf.square(y - action_value))
+  # cost = tf.reduce_sum(tf.square(y - action_value)) # TRY THIS NEXT
 
   return cost

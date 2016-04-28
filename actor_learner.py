@@ -33,26 +33,27 @@ class ActorLearner(object):
 
         self.rng = np.random.RandomState(np.random.randint(10000))
 
-    def act(self, observation, reward, done):
+    def choose_action(self, observation, reward, done):
         """
         Choose action based on current state and e-greedy policy
+        Returns action index and state.
         """
         # Get current state
-        state = self._get_state(observation)
+        state = self.get_state(observation)
         
         # Get Q(s,a) values
-        Q_s_a = self._run('network', {'state':state})[0]
+        Q_s_a = self.session.run(self.graph_ops['network'], feed_dict={self.graph_ops['state']: state})[0]
 
         # E-greedy action selection
         a = self._select_action_e_greedy(Q_s_a)
 
         # Scale down epsilon
         self._decay_epsilon()
-        # T+=1
-        self._run('increment_T')
 
-        # For now, return random action
-        return a
+        # Collect max q value
+        max_q_value = np.max(Q_s_a)
+
+        return (a, state, max_q_value)
 
     def build_initial_state(self, observation):
         """
@@ -63,35 +64,7 @@ class ActorLearner(object):
         for _ in xrange(self.agent_history_length-1):
             self.state_buffer.append(processed_frame)
 
-    def _select_action_e_greedy(self, Q_s_a):
-        if self.rng.rand() < self.epsilon:
-            a = self.rng.randint(0, self.action_space.n)
-        else:
-            a = np.argmax(Q_s_a)
-        return a
-
-    def _decay_epsilon(self):
-        """
-        Scale down epsilon based on global step count T
-        """
-        T = self._run('T')
-        if self.epsilon > self.final_epsilon:
-          self.epsilon = self.starting_epsilon - ((self.starting_epsilon-self.final_epsilon) * float(T)/self.final_epsilon_frame)
-
-    def _run(self, op_name, p_name_to_p_value=None):
-        """
-        Runs a specified TensorFlow op, optionally with a map of
-        placeholder names to placeholder values.
-
-        E.g. self._run('network', {'state': state}) forwards the network
-        """
-        if p_name_to_p_value is None:
-            return self.session.run(self.graph_ops[op_name])
-        else:
-            feed_dict = dict([(self.graph_ops[i], p_name_to_p_value[i]) for i in p_name_to_p_value])
-            return self.session.run(self.graph_ops[op_name], feed_dict=feed_dict)
-
-    def _get_state(self, observation):
+    def get_state(self, observation):
         # Preprocess the current frame
         processed_frame = self._get_preprocessed_frame(observation)
 
@@ -106,6 +79,21 @@ class ActorLearner(object):
         self.state_buffer.popleft()
         self.state_buffer.append(processed_frame)
         return [state]
+
+    def _select_action_e_greedy(self, Q_s_a):
+        if self.rng.rand() < self.epsilon:
+            a = self.rng.randint(0, self.action_space.n)
+        else:
+            a = np.argmax(Q_s_a)
+        return a
+
+    def _decay_epsilon(self):
+        """
+        Scale down epsilon based on global step count T
+        """
+        T = self.session.run(self.graph_ops["T"])
+        if self.epsilon > self.final_epsilon:
+          self.epsilon = self.starting_epsilon - ((self.starting_epsilon-self.final_epsilon) * float(T)/self.final_epsilon_frame)
 
     def _get_preprocessed_frame(self, observation):
         """
