@@ -11,9 +11,6 @@ class ActorLearner(object):
     - Maintaining its own state over observations
       (e.g. a set of 4 previous processed frames).
     - Taking actions according to e-greedy policy.
-    - Computing gradients w.r.t. global network params and
-      updating the global network asyncronously.
-
     """
     def __init__(self, action_space, session, graph_ops,
                  final_epsilon, final_epsilon_frame):
@@ -33,7 +30,7 @@ class ActorLearner(object):
 
         self.rng = np.random.RandomState(np.random.randint(10000))
 
-    def choose_action(self, observation, reward, done):
+    def choose_action(self, observation, done):
         """
         Choose action based on current state and e-greedy policy
         Returns action index and state.
@@ -41,19 +38,28 @@ class ActorLearner(object):
         # Get current state
         state = self.get_state(observation)
         
-        # Get Q(s,a) values
+        # Forward the deep q network, get Q(s,a) values
         Q_s_a = self.session.run(self.graph_ops['network'], feed_dict={self.graph_ops['state']: state})[0]
 
         # E-greedy action selection
         a = self._select_action_e_greedy(Q_s_a)
 
-        # Scale down epsilon
-        self._decay_epsilon()
+        # # Scale down epsilon
+        self.decay_epsilon()
 
         # Collect max q value
         max_q_value = np.max(Q_s_a)
 
         return (a, state, max_q_value)
+
+    def choose_action_eval(self, observation):
+        # Get current state
+        state = self.get_state(observation)
+        
+        # Forward the deep q network, get Q(s,a) values
+        Q_s_a = self.session.run(self.graph_ops['network'], feed_dict={self.graph_ops['state']: state})[0]
+
+        return np.argmax(Q_s_a)
 
     def build_initial_state(self, observation):
         """
@@ -87,7 +93,14 @@ class ActorLearner(object):
             a = np.argmax(Q_s_a)
         return a
 
-    def _decay_epsilon(self):
+    # def decay_epsilon(self):
+    #     """
+    #     Scale down epsilon based on global step count T
+    #     """
+    #     if self.epsilon > self.final_epsilon:
+    #       self.epsilon -= (self.starting_epsilon - self.final_epsilon) / self.final_epsilon_frame
+
+    def decay_epsilon(self):
         """
         Scale down epsilon based on global step count T
         """
