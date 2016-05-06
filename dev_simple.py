@@ -14,17 +14,15 @@ from skimage.transform import resize
 from skimage.color import rgb2gray
 
 # Path params
-# EXPERIMENT_NAME = "breakout"
-# SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
-# CHECKPOINT_SAVE_PATH = "/tmp/model.ckpt"
 EXPERIMENT_NAME = "pong_simple"
 SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
 CHECKPOINT_SAVE_PATH = "/tmp/"+EXPERIMENT_NAME+".ckpt"
+CHECKPOINT_INTERVAL=1
 
 # Experiment params
 GAME = "Pong-v0"
 ACTIONS = 6
-NUM_CONCURRENT = 8
+NUM_CONCURRENT = 4
 NUM_EPISODES = 20000
 
 AGENT_HISTORY_LENGTH = 4
@@ -32,8 +30,8 @@ RESIZED_WIDTH = 84
 RESIZED_HEIGHT = 84
 
 # Async params
-NETWORK_UPDATE_FREQUENCY = 5
-TARGET_NETWORK_UPDATE_FREQUENCY = 40000
+NETWORK_UPDATE_FREQUENCY = 32
+TARGET_NETWORK_UPDATE_FREQUENCY = 10000
 
 # DQN Params
 GAMMA = 0.99
@@ -49,10 +47,7 @@ FINAL_EXPLORATION_FRAME = 1000000
 EXPLORE = FINAL_EXPLORATION_FRAME
 
 #Shared global parameters
-TMAX = 5000000
 T = 0
-It = 10000
-Iasync = 32
 
 def weight_variable(shape):
     initial = tf.truncated_normal(shape, stddev = 0.01)
@@ -69,36 +64,9 @@ def max_pool_2x2(x):
     return tf.nn.max_pool(x, ksize = [1, 2, 2, 1], strides = [1, 2, 2, 1], padding = "SAME")
 
 def createNetwork():
-    # # network weights
-    # W_conv1 = weight_variable([8, 8, 4, 16])
-    # b_conv1 = bias_variable([16])
-
-    # W_conv2 = weight_variable([4, 4, 16, 32])
-    # b_conv2 = bias_variable([32])
-
-    # # W_conv3 = weight_variable([3, 3, 64, 64])
-    # # b_conv3 = bias_variable([64])
-
-    # W_fc1 = weight_variable([32, 256])
-    # b_fc1 = bias_variable([256])
-
-    # W_fc2 = weight_variable([256, ACTIONS])
-    # b_fc2 = bias_variable([ACTIONS])
-
     # # input layer
     s = tf.placeholder("float", [None, 84, 84, 4])
 
-    # # hidden layers
-    # h_conv1 = tf.nn.relu(conv2d(s, W_conv1, 4) + b_conv1)
-
-    # h_conv2 = tf.nn.relu(conv2d(h_conv1, W_conv2, 2) + b_conv2)
-
-    # h_conv2_flat = tf.reshape(h_conv2, [-1, 3872])
-
-    # h_fc1 = tf.nn.relu(tf.matmul(h_conv2_flat, W_fc1) + b_fc1)
-
-    # # readout layer
-    # readout = tf.matmul(h_fc1, W_fc2) + b_fc2
     # network weights
     W_conv1 = weight_variable([8, 8, 4, 32])
     b_conv1 = bias_variable([32])
@@ -115,20 +83,13 @@ def createNetwork():
     W_fc2 = weight_variable([512, ACTIONS])
     b_fc2 = bias_variable([ACTIONS])
  
-    # input layer
-    # s = tf.placeholder("float", [None, 84, 84, 4])
- 
     # hidden layers
     h_conv1 = tf.nn.relu(conv2d(s, W_conv1, 4) + b_conv1)
-    # h_pool1 = max_pool_2x2(h_conv1)
  
     h_conv2 = tf.nn.relu(conv2d(h_conv1, W_conv2, 2) + b_conv2)
-    # h_pool2 = max_pool_2x2(h_conv2)
  
     h_conv3 = tf.nn.relu(conv2d(h_conv2, W_conv3, 1) + b_conv3)
-    # h_pool3 = max_pool_2x2(h_conv3)
  
-    #h_pool3_flat = tf.reshape(h_pool3, [-1, 256])
     h_conv3_flat = tf.reshape(h_conv3, [-1, 7744])
  
     h_fc1 = tf.nn.relu(tf.matmul(h_conv3_flat, W_fc1) + b_fc1)
@@ -270,13 +231,13 @@ def actorLearner(num, env, session, lock):
             ep_t += 1
             ep_reward += r_t
             episode_ave_max_q += np.max(readout_t)
-    
+
             # Update the Otarget network
-            if T % It == 0:
+            if T % TARGET_NETWORK_UPDATE_FREQUENCY == 0:
                 copyTargetNetwork(session)
     
             # Update the O network
-            if t % Iasync == 0 or terminal:
+            if t % NETWORK_UPDATE_FREQUENCY == 0 or terminal:
                 if s_j_batch:
                     # Perform asynchronous update of O network
                     train_O.run(session = session, feed_dict = {
@@ -290,8 +251,8 @@ def actorLearner(num, env, session, lock):
                 y_batch = []
     
             # Save progress every 5000 iterations
-            if t % 5000 == 0:
-                saver.save(sess, 'save_networks_asyn/' + GAME + '-dqn', global_step = t)
+            if t % CHECKPOINT_INTERVAL == 0:
+                saver.save(session, CHECKPOINT_SAVE_PATH, global_step = t)
     
             # Print info
             state = ""
@@ -311,6 +272,7 @@ def actorLearner(num, env, session, lock):
 # We create the shared global networks
 # O network
 s, O_readout, W_conv1, b_conv1, W_conv2, b_conv2, W_fc1, b_fc1, W_fc2, b_fc2 = createNetwork()
+network_params = [W_conv1, b_conv1, W_conv2, b_conv2, W_fc1, b_fc1, W_fc2, b_fc2]
 
 # Training node
 a = tf.placeholder("float", [None, ACTIONS])
@@ -345,14 +307,14 @@ summary_op = tf.merge_all_summaries()
 
 # Initialize session and variables
 session = tf.InteractiveSession()
-saver = tf.train.Saver()
+saver = tf.train.Saver(network_params)
 session.run(tf.initialize_all_variables())
 writer = tf.train.SummaryWriter(SUMMARY_SAVE_PATH, session.graph)
 
-checkpoint = tf.train.get_checkpoint_state("save_networks_asyn")
-if checkpoint and checkpoint.model_checkpoint_path:
-    saver.restore(session, checkpoint.model_checkpoint_path)
-    print "Successfully loaded:", checkpoint.model_checkpoint_path
+# checkpoint = tf.train.get_checkpoint_state("save_networks_asyn")
+# if checkpoint and checkpoint.model_checkpoint_path:
+#     saver.restore(session, checkpoint.model_checkpoint_path)
+#     print "Successfully loaded:", checkpoint.model_checkpoint_path
 
 if __name__ == "__main__":
     # Start n concurrent actor threads
