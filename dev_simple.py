@@ -17,12 +17,12 @@ from skimage.color import rgb2gray
 EXPERIMENT_NAME = "pong_simple"
 SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
 CHECKPOINT_SAVE_PATH = "/tmp/"+EXPERIMENT_NAME+".ckpt"
-CHECKPOINT_INTERVAL=1
+CHECKPOINT_INTERVAL=5000
 
 # Experiment params
 GAME = "Pong-v0"
 ACTIONS = 6
-NUM_CONCURRENT = 4
+NUM_CONCURRENT = 1
 NUM_EPISODES = 20000
 
 AGENT_HISTORY_LENGTH = 4
@@ -30,8 +30,8 @@ RESIZED_WIDTH = 84
 RESIZED_HEIGHT = 84
 
 # Async params
-NETWORK_UPDATE_FREQUENCY = 32
 TARGET_NETWORK_UPDATE_FREQUENCY = 10000
+NETWORK_UPDATE_FREQUENCY = 32
 
 # DQN Params
 GAMMA = 0.99
@@ -68,19 +68,16 @@ def createNetwork():
     s = tf.placeholder("float", [None, 84, 84, 4])
 
     # network weights
-    W_conv1 = weight_variable([8, 8, 4, 32])
-    b_conv1 = bias_variable([32])
+    W_conv1 = weight_variable([8, 8, 4, 16])
+    b_conv1 = bias_variable([16])
  
-    W_conv2 = weight_variable([4, 4, 32, 64])
-    b_conv2 = bias_variable([64])
- 
-    W_conv3 = weight_variable([3, 3, 64, 64])
-    b_conv3 = bias_variable([64])
+    W_conv2 = weight_variable([4, 4, 16, 32])
+    b_conv2 = bias_variable([32])
     
-    W_fc1 = weight_variable([7744, 512])
-    b_fc1 = bias_variable([512])
+    W_fc1 = weight_variable([3872, 256])
+    b_fc1 = bias_variable([256])
  
-    W_fc2 = weight_variable([512, ACTIONS])
+    W_fc2 = weight_variable([256, ACTIONS])
     b_fc2 = bias_variable([ACTIONS])
  
     # hidden layers
@@ -88,11 +85,9 @@ def createNetwork():
  
     h_conv2 = tf.nn.relu(conv2d(h_conv1, W_conv2, 2) + b_conv2)
  
-    h_conv3 = tf.nn.relu(conv2d(h_conv2, W_conv3, 1) + b_conv3)
+    h_conv2_flat = tf.reshape(h_conv2, [-1, 3872])
  
-    h_conv3_flat = tf.reshape(h_conv3, [-1, 7744])
- 
-    h_fc1 = tf.nn.relu(tf.matmul(h_conv3_flat, W_fc1) + b_fc1)
+    h_fc1 = tf.nn.relu(tf.matmul(h_conv2_flat, W_fc1) + b_fc1)
  
     # readout layer
     readout = tf.matmul(h_fc1, W_fc2) + b_fc2
@@ -166,15 +161,21 @@ def actorLearner(num, env, session, lock):
     FINAL_EPSILON = sample_final_epsilon()
     epsilon = INITIAL_EPSILON
 
-    state_buffer = deque()
-
+    # state_buffer = deque()
+    time.sleep(3*num)
+    copyTargetNetwork(session)
     t = 0
 
     for i_episode in xrange(NUM_EPISODES):
         # Get initial game observation
-        observation = env.reset()
+        # observation = env.reset()
         # Have actor-learner build up it's initial state
-        state_buffer = build_initial_state(observation, state_buffer)
+        # state_buffer = build_initial_state(observation, state_buffer)
+
+        x_t = env.reset()
+        x_t = get_preprocessed_frame(x_t)
+        s_t = np.stack((x_t, x_t, x_t, x_t), axis = 2)
+        aux_s = s_t
 
         reward = 0
         terminal = False
@@ -183,8 +184,6 @@ def actorLearner(num, env, session, lock):
         ep_t = 0
         start_time = time.time()
 
-        print "In THREAD ", num
-
         while True:
             # Actor-learner chooses action based on e-greedy policy
             """
@@ -192,7 +191,8 @@ def actorLearner(num, env, session, lock):
             Returns action index and state.
             """
             # Get current state
-            s_t, state_buffer = get_state(observation, state_buffer)
+            # s_t, state_buffer = get_state(observation, state_buffer)
+
             # Forward the deep q network, get Q(s,a) values
             readout_t = O_readout.eval(session = session, feed_dict = {s : [s_t]})
             a_t = np.zeros([ACTIONS])
@@ -206,26 +206,35 @@ def actorLearner(num, env, session, lock):
     
             # Scale down epsilon
             if epsilon > FINAL_EPSILON:
+                # epsilon = INITIAL_EPSILON - ((INITIAL_EPSILON-FINAL_EPSILON) * float(T)/FINAL_EXPLORATION_FRAME)
                 epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
     
             # Gym excecutes action in game environment on behalf of actor-learner
-            # lock.acquire()
-            observation, r_t, terminal, info = env.step(action_index)
-            # lock.release()
-            
-            s_t1, state_buffer = get_state(observation, state_buffer)
+            lock.acquire()
+            x_t1, r_t, terminal, info = env.step(action_index)
+            lock.release()
+ 
+            # Get the new state based on current frame
+            x_t1 = get_preprocessed_frame(x_t1)
+            x_t1 = np.reshape(x_t1, (84, 84, 1))
+            aux_s = np.delete(s_t, 0, axis = 2)
+            s_t1 = np.append(aux_s, x_t1, axis = 2)
+
+            # s_t1, state_buffer = get_state(observation, state_buffer)
 
             # Accumulate gradients
             readout_j1 = Ot_readout.eval(session = session, feed_dict = {st : [s_t1]})
+            clipped_r_t = np.clip(r_t, -1, 1)
             if terminal:
-                y_batch.append(r_t)
+                y_batch.append(clipped_r_t)
             else:
-                y_batch.append(r_t + GAMMA * np.max(readout_j1))
+                y_batch.append(clipped_r_t + GAMMA * np.max(readout_j1))
     
             a_batch.append(a_t)
             s_j_batch.append(s_t)
     
             # Update the old values
+            s_t = s_t1
             T += 1
             t += 1
             ep_t += 1
@@ -265,7 +274,7 @@ def actorLearner(num, env, session, lock):
                 stats = [ep_reward, episode_ave_max_q/float(ep_t), epsilon]
                 for i in range(len(summary_vars)):
                     session.run(update_ops[i], feed_dict={summary_placeholders[i]:float(stats[i])})
-                print "THREAD:", num, "/ TIME", T, "/ TIMESTEP", t, "/ STATE", state, "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", r_t, "/ Q_MAX %.4f" % (episode_ave_max_q/float(ep_t)), "/ SCORE", ep_reward
+                print "THREAD:", num, "/ TIME", T, "/ TIMESTEP", t, "/ STATE", state, "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", r_t, "/ Q_MAX %.4f" % (episode_ave_max_q/float(ep_t)), "/ SCORE", ep_reward, "/ PROGRESS", t/float(EXPLORE)
                 break
 
 
@@ -330,7 +339,6 @@ if __name__ == "__main__":
         t.start()
 
     while True:
-        # envs[0].render()
         for env in envs:
             env.render()
         summary_str = session.run(summary_op)
