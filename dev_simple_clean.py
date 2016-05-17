@@ -1,0 +1,319 @@
+#!/usr/bin/env python
+from skimage.transform import resize
+from skimage.color import rgb2gray
+import threading
+import tensorflow as tf
+import sys
+import random
+import numpy as np
+import time
+import gym
+from keras import backend as K
+from keras.layers import Convolution2D, Flatten, Dense
+from collections import deque
+from model import build_network
+from keras import backend as K
+from atari_environment import AtariEnvironment
+
+# Path params
+EXPERIMENT_NAME = "pong_large"
+# SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
+SUMMARY_SAVE_PATH = "/home/ec2-user/async-rl/summaries/"+EXPERIMENT_NAME
+CHECKPOINT_SAVE_PATH = "/tmp/"+EXPERIMENT_NAME+".ckpt"
+CHECKPOINT_NAME = "/tmp/dev.ckpt-65"
+CHECKPOINT_INTERVAL=5000
+SUMMARY_INTERVAL=5
+# TRAINING = False
+TRAINING = True
+
+SHOW_TRAINING = False
+
+# Experiment params
+GAME = "Pong-v0"
+ACTIONS = 6
+NUM_CONCURRENT = 1
+NUM_EPISODES = 20000
+
+AGENT_HISTORY_LENGTH = 4
+RESIZED_WIDTH = 84
+RESIZED_HEIGHT = 84
+
+# Async params
+TARGET_NETWORK_UPDATE_FREQUENCY = 10000
+NETWORK_UPDATE_FREQUENCY = 32
+
+# DQN Params
+GAMMA = 0.99
+LEARNING_RATE = 0.00025
+GRADIENT_MOMENTUM = 0.95
+SQUARED_GRADIENT_MOMENTUM = 0.95
+MIN_SQUARED_GRADIENT = 0.01
+
+# Epsilon params
+INITIAL_EPSILON = 1.0
+FINAL_EXPLORATION_FRAME = 1000000
+EXPLORE = FINAL_EXPLORATION_FRAME
+
+#Shared global parameters
+T = 0
+
+def sample_final_epsilon():
+    """
+    Actor-learner helper
+    Sample a final epsilon value to anneal towards
+    from a discrete distribution.
+    Called by each actor-learner thread.
+    """
+    final_epsilons = np.array([.1,.01,.5])
+    probabilities = np.array([0.4,0.3,0.3])
+    return np.random.choice(final_epsilons, 1, p=list(probabilities))[0]
+
+def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
+    # We use global shared O parameter vector
+    # We use global shared Otarget parameter vector
+    # We use global shared counter T, and TMAX constant
+    global TMAX, T
+
+    # Unpack graph ops
+    s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update = graph_ops
+
+    summary_vars, summary_placeholders, update_ops, summary_op = summary_ops
+
+    # Wrap env with AtariEnvironment helper class
+    env = AtariEnvironment(gym_env=env, resized_width=RESIZED_WIDTH, resized_height=RESIZED_HEIGHT, agent_history_length=AGENT_HISTORY_LENGTH)
+
+    # Initialize network gradients
+    s_j_batch = []
+    a_batch = []
+    y_batch = []
+
+    FINAL_EPSILON = sample_final_epsilon()
+    epsilon = INITIAL_EPSILON
+
+    print "Starting thread ", num, "with final epsilon ", FINAL_EPSILON 
+
+    time.sleep(3*num)
+    t = 0
+    for i_episode in xrange(NUM_EPISODES):
+        # Get initial game observation
+        s_t = env.get_initial_state()
+        # x_t = env.reset()
+        # x_t = get_preprocessed_frame(x_t)
+        # s_t = np.stack((x_t, x_t, x_t, x_t), axis = 0)
+        # aux_s = s_t
+
+        reward = 0
+        terminal = False
+        ep_reward = 0
+        episode_ave_max_q = 0
+        ep_t = 0
+        start_time = time.time()
+
+        while True:
+            # Actor-learner chooses action based on e-greedy policy
+            """
+            Choose action based on current state and e-greedy policy
+            Returns action index and state.
+            """
+            # Forward the deep q network, get Q(s,a) values
+            readout_t = q_values.eval(session = session, feed_dict = {s : [s_t]})
+            a_t = np.zeros([ACTIONS])
+            action_index = 0
+            if random.random() <= epsilon:
+                action_index = random.randrange(ACTIONS)
+            else:
+                action_index = np.argmax(readout_t)
+            a_t[action_index] = 1
+
+            # Scale down epsilon
+            if epsilon > FINAL_EPSILON:
+                epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
+    
+            # Gym excecutes action in game environment on behalf of actor-learner
+            # x_t1, r_t, terminal, info = env.step(action_index)
+ 
+            # Get the new state based on current frame
+            # x_t1 = get_preprocessed_frame(x_t1)
+            # x_t1 = np.reshape(x_t1, (1, RESIZED_WIDTH, RESIZED_HEIGHT))
+            # aux_s = np.delete(s_t, 0, axis = 0)
+            # s_t1 = np.append(aux_s, x_t1, axis = 0)
+            s_t1, r_t, terminal, info = env.step(action_index)
+
+            # Accumulate gradients
+            readout_j1 = target_q_values.eval(session = session, feed_dict = {st : [s_t1]})
+            clipped_r_t = np.clip(r_t, -1, 1)
+            if terminal:
+                y_batch.append(clipped_r_t)
+            else:
+                y_batch.append(clipped_r_t + GAMMA * np.max(readout_j1))
+    
+            a_batch.append(a_t)
+            s_j_batch.append(s_t)
+    
+            # Update the old values
+            s_t = s_t1
+            T += 1
+            t += 1
+            ep_t += 1
+            ep_reward += r_t
+            episode_ave_max_q += np.max(readout_t)
+
+            # Update the Otarget network
+            if T % TARGET_NETWORK_UPDATE_FREQUENCY == 0:
+                session.run(reset_target_network_params)
+    
+            # Update the O network
+            if t % NETWORK_UPDATE_FREQUENCY == 0 or terminal:
+                if s_j_batch:
+                    # Perform asynchronous update of O network
+                    grad_update.run(session = session, feed_dict = {
+            	           y : y_batch,
+            	           a : a_batch,
+            	           s : s_j_batch})
+    
+                #Clear gradients
+                s_j_batch = []
+                a_batch = []
+                y_batch = []
+    
+            # Save progress every 5000 iterations
+            if t % CHECKPOINT_INTERVAL == 0:
+                saver.save(session, CHECKPOINT_SAVE_PATH, global_step = t)
+    
+            # Print info
+            state = ""
+            if t < EXPLORE:
+                state = "explore"
+            else:
+                state = "train"
+
+            if terminal:
+                stats = [ep_reward, episode_ave_max_q/float(ep_t), epsilon]
+                for i in range(len(summary_vars)):
+                    session.run(update_ops[i], feed_dict={summary_placeholders[i]:float(stats[i])})
+                print "THREAD:", num, "/ TIME", T, "/ TIMESTEP", t, "/ STATE", state, "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q/float(ep_t)), "/ SCORE", ep_reward, "/ PROGRESS", t/float(EXPLORE)
+                break
+
+def build_graph():
+    # Create shared deep q network
+    s, q_values = build_network(namespace="network_params", num_actions=ACTIONS)
+    network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                       "network_params")
+    # Create shared target network
+    st, target_q_values = build_network(namespace="target_network_params", num_actions=ACTIONS)
+    target_network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                       "target_network_params")
+
+    # Op for periodically updating target network with online network weights.
+    reset_target_network_params = [target_network_params[i].assign(network_params[i]) for i in range(len(target_network_params))]
+    
+    # Define cost and gradient update op
+    a = tf.placeholder("float", [None, ACTIONS])
+    y = tf.placeholder("float", [None])
+    q_values_action = tf.reduce_sum(tf.mul(q_values, a), reduction_indices=1)
+    cost = tf.reduce_mean(tf.square(y - q_values_action))
+    grad_update = tf.train.RMSPropOptimizer(0.00025, 0.95, 0.95, 0.01).minimize(cost)
+
+    return [s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update]
+
+# Set up some episode summary ops to visualize on tensorboard.
+def setup_summaries():
+    episode_reward = tf.Variable(0.)
+    tf.scalar_summary("Episode Reward", episode_reward)
+    episode_ave_max_q = tf.Variable(0.)
+    tf.scalar_summary("Max Q Value", episode_ave_max_q)
+    logged_epsilon = tf.Variable(0.)
+    tf.scalar_summary("Epsilon", logged_epsilon)
+    logged_T = tf.Variable(0.)
+    tf.scalar_summary("T", logged_T)
+    logged_num_episodes = tf.Variable(0.)
+    tf.scalar_summary("Num Episodes", logged_num_episodes)
+    logged_time_per_episode = tf.Variable(0.)
+    tf.scalar_summary("Time per episode", logged_time_per_episode)
+    summary_vars = [episode_reward, episode_ave_max_q, logged_epsilon]
+    summary_placeholders = [tf.placeholder("float") for i in range(len(summary_vars))]
+    update_ops = [summary_vars[i].assign(summary_placeholders[i]) for i in range(len(summary_vars))]
+    summary_op = tf.merge_all_summaries()
+    return summary_vars, summary_placeholders, update_ops, summary_op
+
+def train(session, graph_ops, saver):
+    # Initialize target network weights
+    reset_target_network_params = graph_ops[6]
+    session.run(reset_target_network_params)
+
+    # Set up game environments (one per thread)
+    envs = [gym.make(GAME) for i in range(NUM_CONCURRENT)]
+    
+    summary_ops = setup_summaries()
+    summary_op = summary_ops[3]
+
+    # Initialize variables
+    session.run(tf.initialize_all_variables())
+    writer = tf.train.SummaryWriter(SUMMARY_SAVE_PATH, session.graph)
+
+    # Start NUM_CONCURRENT training threads
+    actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id, envs[thread_id], session, graph_ops, summary_ops, saver)) for thread_id in range(NUM_CONCURRENT)]
+    for t in actor_learner_threads:
+        t.start()
+
+    # Show the agents training and write summary statistics
+    last_summary_time = 0
+    while True:
+        if SHOW_TRAINING:
+            for env in envs:
+                env.render()
+        now = time.time()
+        if now - last_summary_time > SUMMARY_INTERVAL:
+            summary_str = session.run(summary_op)
+            writer.add_summary(summary_str, float(T))
+            last_summary_time = now
+    for t in actor_learner_threads:
+        t.join()
+
+def evaluation(session, graph_ops, saver):
+    saver.restore(session, CHECKPOINT_NAME)
+    print "Successfully loaded:", CHECKPOINT_NAME
+    print "Restored model weights from ", CHECKPOINT_NAME
+    monitor_env = gym.make(GAME)
+    monitor_env.monitor.start('/tmp/'+EXPERIMENT_NAME+"/eval")
+
+    # Unpack graph ops
+    s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update = graph_ops
+
+    # Wrap env with AtariEnvironment helper class
+    env = AtariEnvironment(gym_env=monitor_env, resized_width=RESIZED_WIDTH, resized_height=RESIZED_HEIGHT, agent_history_length=AGENT_HISTORY_LENGTH)
+
+    for i_episode in xrange(100):
+        s_t = env.get_initial_state()
+        ep_reward = 0
+        terminal = False
+        while not terminal:
+            monitor_env.render()
+            # Forward the deep q network, get Q(s,a) values
+            readout_t = q_values.eval(session = session, feed_dict = {s : [s_t]})
+            action_index = np.argmax(readout_t)
+            s_t1, r_t, terminal, info = env.step(action_index)
+            s_t = s_t1
+            ep_reward += r_t
+        print ep_reward
+    monitor_env.monitor.close()
+
+def main(_):
+  g = tf.Graph()
+  with g.as_default(), tf.Session() as session:
+    K.set_session(session) # set Keras session
+
+    graph_ops = build_graph()
+
+    # Initialize session and variables
+    network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                       "network_params")
+    saver = tf.train.Saver()
+
+    if TRAINING:
+        train(session, graph_ops, saver)
+    else:
+        evaluation(session, graph_ops, saver)
+
+if __name__ == "__main__":
+  tf.app.run()
