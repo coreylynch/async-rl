@@ -20,7 +20,7 @@ EXPERIMENT_NAME = "pong_large"
 # SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
 SUMMARY_SAVE_PATH = "/home/ec2-user/async-rl/summaries/"+EXPERIMENT_NAME
 CHECKPOINT_SAVE_PATH = "/tmp/"+EXPERIMENT_NAME+".ckpt"
-CHECKPOINT_NAME = "/tmp/dev.ckpt-65"
+CHECKPOINT_NAME = "/Users/coreylynch/dev/async-rl/ec2_checkpoints/pong_large.ckpt-310000"
 CHECKPOINT_INTERVAL=5000
 SUMMARY_INTERVAL=5
 # TRAINING = False
@@ -31,7 +31,7 @@ SHOW_TRAINING = False
 # Experiment params
 GAME = "Pong-v0"
 ACTIONS = 6
-NUM_CONCURRENT = 1
+NUM_CONCURRENT = 36
 NUM_EPISODES = 20000
 
 AGENT_HISTORY_LENGTH = 4
@@ -44,18 +44,19 @@ NETWORK_UPDATE_FREQUENCY = 32
 
 # DQN Params
 GAMMA = 0.99
-LEARNING_RATE = 0.00025
-GRADIENT_MOMENTUM = 0.95
-SQUARED_GRADIENT_MOMENTUM = 0.95
-MIN_SQUARED_GRADIENT = 0.01
+
+# Optimization Params
+LEARNING_RATE = 7e-4
+RMSPROP_DECAY = 0.99
+RMSPROP_EPSILON = 0.1
 
 # Epsilon params
 INITIAL_EPSILON = 1.0
 FINAL_EXPLORATION_FRAME = 1000000
-EXPLORE = FINAL_EXPLORATION_FRAME
 
 #Shared global parameters
 T = 0
+TMAX = 80000000
 
 def sample_final_epsilon():
     """
@@ -75,6 +76,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     global TMAX, T
 
     # Unpack graph ops
+    # s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update, learning_rate = graph_ops
     s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update = graph_ops
 
     summary_vars, summary_placeholders, update_ops, summary_op = summary_ops
@@ -87,27 +89,22 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     a_batch = []
     y_batch = []
 
-    FINAL_EPSILON = sample_final_epsilon()
+    final_epsilon = sample_final_epsilon()
     epsilon = INITIAL_EPSILON
 
-    print "Starting thread ", num, "with final epsilon ", FINAL_EPSILON 
+    print "Starting thread ", num, "with final epsilon ", final_epsilon 
 
     time.sleep(3*num)
     t = 0
-    for i_episode in xrange(NUM_EPISODES):
+    while T < TMAX:
         # Get initial game observation
         s_t = env.get_initial_state()
-        # x_t = env.reset()
-        # x_t = get_preprocessed_frame(x_t)
-        # s_t = np.stack((x_t, x_t, x_t, x_t), axis = 0)
-        # aux_s = s_t
-
-        reward = 0
         terminal = False
+
+        # Set up per-episode counters
         ep_reward = 0
         episode_ave_max_q = 0
         ep_t = 0
-        start_time = time.time()
 
         while True:
             # Actor-learner chooses action based on e-greedy policy
@@ -126,17 +123,10 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
             a_t[action_index] = 1
 
             # Scale down epsilon
-            if epsilon > FINAL_EPSILON:
-                epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
+            if epsilon > final_epsilon:
+                epsilon -= (INITIAL_EPSILON - final_epsilon) / FINAL_EXPLORATION_FRAME
     
             # Gym excecutes action in game environment on behalf of actor-learner
-            # x_t1, r_t, terminal, info = env.step(action_index)
- 
-            # Get the new state based on current frame
-            # x_t1 = get_preprocessed_frame(x_t1)
-            # x_t1 = np.reshape(x_t1, (1, RESIZED_WIDTH, RESIZED_HEIGHT))
-            # aux_s = np.delete(s_t, 0, axis = 0)
-            # s_t1 = np.append(aux_s, x_t1, axis = 0)
             s_t1, r_t, terminal, info = env.step(action_index)
 
             # Accumulate gradients
@@ -154,6 +144,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
             s_t = s_t1
             T += 1
             t += 1
+
             ep_t += 1
             ep_reward += r_t
             episode_ave_max_q += np.max(readout_t)
@@ -165,13 +156,17 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
             # Update the O network
             if t % NETWORK_UPDATE_FREQUENCY == 0 or terminal:
                 if s_j_batch:
+                    # Get current learning rate
+                    # lr = LEARNING_RATE * (TMAX-T)/float(TMAX)
+
                     # Perform asynchronous update of O network
                     grad_update.run(session = session, feed_dict = {
             	           y : y_batch,
             	           a : a_batch,
             	           s : s_j_batch})
+                           # learning_rate : lr})
     
-                #Clear gradients
+                # Clear gradients
                 s_j_batch = []
                 a_batch = []
                 y_batch = []
@@ -182,7 +177,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     
             # Print info
             state = ""
-            if t < EXPLORE:
+            if t < FINAL_EXPLORATION_FRAME:
                 state = "explore"
             else:
                 state = "train"
@@ -191,7 +186,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
                 stats = [ep_reward, episode_ave_max_q/float(ep_t), epsilon]
                 for i in range(len(summary_vars)):
                     session.run(update_ops[i], feed_dict={summary_placeholders[i]:float(stats[i])})
-                print "THREAD:", num, "/ TIME", T, "/ TIMESTEP", t, "/ STATE", state, "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q/float(ep_t)), "/ SCORE", ep_reward, "/ PROGRESS", t/float(EXPLORE)
+                print "THREAD:", num, "/ TIME", T, "/ TIMESTEP", t, "/ STATE", state, "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", ep_reward, "/ Q_MAX %.4f" % (episode_ave_max_q/float(ep_t)), "/ SCORE", ep_reward, "/ PROGRESS", t/float(FINAL_EXPLORATION_FRAME)
                 break
 
 def build_graph():
@@ -212,8 +207,11 @@ def build_graph():
     y = tf.placeholder("float", [None])
     q_values_action = tf.reduce_sum(tf.mul(q_values, a), reduction_indices=1)
     cost = tf.reduce_mean(tf.square(y - q_values_action))
-    grad_update = tf.train.RMSPropOptimizer(0.00025, 0.95, 0.95, 0.01).minimize(cost)
+    # learning_rate = tf.placeholder(tf.float32, shape=[])
+    # grad_update = tf.train.RMSPropOptimizer(learning_rate=learning_rate, decay=RMSPROP_DECAY, epsilon=RMSPROP_EPSILON).minimize(cost)
+    grad_update = tf.train.AdamOptimizer(learning_rate=0.001).minimize(cost)
 
+    # return [s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update, learning_rate]
     return [s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update]
 
 # Set up some episode summary ops to visualize on tensorboard.
