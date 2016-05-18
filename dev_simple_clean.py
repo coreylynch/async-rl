@@ -70,13 +70,10 @@ def sample_final_epsilon():
     return np.random.choice(final_epsilons, 1, p=list(probabilities))[0]
 
 def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
-    # We use global shared O parameter vector
-    # We use global shared Otarget parameter vector
     # We use global shared counter T, and TMAX constant
     global TMAX, T
 
     # Unpack graph ops
-    # s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update, learning_rate = graph_ops
     s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update = graph_ops
 
     summary_vars, summary_placeholders, update_ops, summary_op = summary_ops
@@ -156,15 +153,11 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
             # Update the O network
             if t % NETWORK_UPDATE_FREQUENCY == 0 or terminal:
                 if s_j_batch:
-                    # Get current learning rate
-                    # lr = LEARNING_RATE * (TMAX-T)/float(TMAX)
-
                     # Perform asynchronous update of O network
                     grad_update.run(session = session, feed_dict = {
             	           y : y_batch,
             	           a : a_batch,
             	           s : s_j_batch})
-                           # learning_rate : lr})
     
                 # Clear gradients
                 s_j_batch = []
@@ -207,11 +200,8 @@ def build_graph():
     y = tf.placeholder("float", [None])
     q_values_action = tf.reduce_sum(tf.mul(q_values, a), reduction_indices=1)
     cost = tf.reduce_mean(tf.square(y - q_values_action))
-    # learning_rate = tf.placeholder(tf.float32, shape=[])
-    # grad_update = tf.train.RMSPropOptimizer(learning_rate=learning_rate, decay=RMSPROP_DECAY, epsilon=RMSPROP_EPSILON).minimize(cost)
     grad_update = tf.train.AdamOptimizer(learning_rate=0.001).minimize(cost)
 
-    # return [s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update, learning_rate]
     return [s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update]
 
 # Set up some episode summary ops to visualize on tensorboard.
