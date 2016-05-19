@@ -74,7 +74,14 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     global TMAX, T
 
     # Unpack graph ops
-    s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update = graph_ops
+    s = graph_ops["s"]
+    q_values = graph_ops["q_values"]
+    st = graph_ops["st"]
+    target_q_values = graph_ops["target_q_values"]
+    reset_target_network_params = graph_ops["reset_target_network_params"]
+    a = graph_ops["a"]
+    y = graph_ops["y"]
+    grad_update = graph_ops["grad_update"]
 
     summary_vars, summary_placeholders, update_ops, summary_op = summary_ops
 
@@ -202,7 +209,16 @@ def build_graph():
     cost = tf.reduce_mean(tf.square(y - q_values_action))
     grad_update = tf.train.AdamOptimizer(learning_rate=0.001).minimize(cost)
 
-    return [s, q_values, network_params, st, target_q_values, target_network_params, reset_target_network_params, a, y, grad_update]
+    graph_ops = {"s" : s, 
+                 "q_values" : q_values,
+                 "st" : st, 
+                 "target_q_values" : target_q_values,
+                 "reset_target_network_params" : reset_target_network_params,
+                 "a" : a,
+                 "y" : y,
+                 "grad_update" : grad_update}
+
+    return graph_ops
 
 # Set up some episode summary ops to visualize on tensorboard.
 def setup_summaries():
@@ -213,11 +229,6 @@ def setup_summaries():
     logged_epsilon = tf.Variable(0.)
     tf.scalar_summary("Epsilon", logged_epsilon)
     logged_T = tf.Variable(0.)
-    tf.scalar_summary("T", logged_T)
-    logged_num_episodes = tf.Variable(0.)
-    tf.scalar_summary("Num Episodes", logged_num_episodes)
-    logged_time_per_episode = tf.Variable(0.)
-    tf.scalar_summary("Time per episode", logged_time_per_episode)
     summary_vars = [episode_reward, episode_ave_max_q, logged_epsilon]
     summary_placeholders = [tf.placeholder("float") for i in range(len(summary_vars))]
     update_ops = [summary_vars[i].assign(summary_placeholders[i]) for i in range(len(summary_vars))]
@@ -226,8 +237,7 @@ def setup_summaries():
 
 def train(session, graph_ops, saver):
     # Initialize target network weights
-    reset_target_network_params = graph_ops[6]
-    session.run(reset_target_network_params)
+    session.run(graph_ops["reset_target_network_params"])
 
     # Set up game environments (one per thread)
     envs = [gym.make(GAME) for i in range(NUM_CONCURRENT)]
@@ -260,7 +270,6 @@ def train(session, graph_ops, saver):
 
 def evaluation(session, graph_ops, saver):
     saver.restore(session, CHECKPOINT_NAME)
-    print "Successfully loaded:", CHECKPOINT_NAME
     print "Restored model weights from ", CHECKPOINT_NAME
     monitor_env = gym.make(GAME)
     monitor_env.monitor.start('/tmp/'+EXPERIMENT_NAME+"/eval")
@@ -289,13 +298,8 @@ def evaluation(session, graph_ops, saver):
 def main(_):
   g = tf.Graph()
   with g.as_default(), tf.Session() as session:
-    K.set_session(session) # set Keras session
-
+    K.set_session(session)
     graph_ops = build_graph()
-
-    # Initialize session and variables
-    network_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                       "network_params")
     saver = tf.train.Saver()
 
     if TRAINING:
