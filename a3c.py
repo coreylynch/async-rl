@@ -17,8 +17,8 @@ from atari_environment import AtariEnvironment
 
 # Path params
 EXPERIMENT_NAME = "breakout_a3c"
-# SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
-SUMMARY_SAVE_PATH = "/home/ec2-user/async-rl/summaries/"+EXPERIMENT_NAME
+SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
+# SUMMARY_SAVE_PATH = "/home/ec2-user/async-rl/summaries/"+EXPERIMENT_NAME
 CHECKPOINT_SAVE_PATH = "/tmp/"+EXPERIMENT_NAME+".ckpt"
 # CHECKPOINT_NAME = "/Users/coreylynch/dev/async-rl/ec2_checkpoints/pong_large.ckpt-310000"
 CHECKPOINT_INTERVAL=5000
@@ -26,13 +26,14 @@ SUMMARY_INTERVAL=5
 # TRAINING = False
 TRAINING = True
 
-# SHOW_TRAINING = True
-SHOW_TRAINING = False
+SHOW_TRAINING = True
+# SHOW_TRAINING = False
 
 # Experiment params
 GAME = "Breakout-v0"
 ACTIONS = 6
-NUM_CONCURRENT = 16
+ACTIONS = 3
+NUM_CONCURRENT = 1
 NUM_EPISODES = 20000
 
 AGENT_HISTORY_LENGTH = 4
@@ -43,9 +44,13 @@ RESIZED_HEIGHT = 84
 GAMMA = 0.99
 
 # Optimization Params
-LEARNING_RATE = 7e-4
-RMSPROP_DECAY = 0.99
-RMSPROP_EPSILON = 0.1
+# LEARNING_RATE = 7e-4
+# LEARNING_RATE = 0.000001
+LEARNING_RATE = 0.0001
+RMSPROP_DECAY = 0.95
+RMSPROP_EPSILON = 0.01
+# RMSPROP_DECAY = 0.99
+# RMSPROP_EPSILON = 0.1
 
 #Shared global parameters
 T = 0
@@ -70,7 +75,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     global TMAX, T
 
     # Unpack graph ops
-    apply_grads, learning_rate, grads_and_vars, grads_placeholders, all_params, thread_ops = graph_ops
+    apply_p_grads, apply_v_grads, learning_rate, p_grads_and_vars, v_grads_and_vars, p_grads_placeholders, v_grads_placeholders, p_params, v_params, thread_ops = graph_ops
     ops = thread_ops[num]
     s = ops["s"]
     p_network = ops["p_network"]
@@ -79,16 +84,16 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     R = ops["R"]
     sync_p = ops["sync_p"]
     sync_v = ops["sync_v"]
-    grads = ops["grads"]
+    p_grads = ops["p_grads"]
+    v_grads = ops["v_grads"]
 
     # Unpack tensorboard summary stuff
     r_summary_placeholder, update_ep_reward, val_summary_placeholder, update_ep_val, summary_op = summary_ops
 
     # Wrap env with AtariEnvironment helper class
     env = AtariEnvironment(gym_env=env, resized_width=RESIZED_WIDTH, resized_height=RESIZED_HEIGHT, agent_history_length=AGENT_HISTORY_LENGTH)
-    s_t = env.get_initial_state()
 
-    time.sleep(3*num)
+    time.sleep(5*num)
 
     # Set up per-episode counters
     ep_reward = 0
@@ -96,22 +101,23 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     v_steps = 0
     ep_t = 0
 
-    t = 0
-    t_start = 0
+    t = 1
 
     s_t = env.get_initial_state()
     terminal = False
 
-    accum_gradients = np.array([np.zeros(var.get_shape().as_list(), dtype=np.float32) for var in all_params])
+    p_accum_gradients = np.array([np.zeros(var.get_shape().as_list(), dtype=np.float32) for var in p_params])
+    v_accum_gradients = np.array([np.zeros(var.get_shape().as_list(), dtype=np.float32) for var in v_params])
 
     while T < TMAX:
-        # # Reset gradients
-        accum_gradients *= 0.0
+        # Reset gradients
+        p_accum_gradients *= 0.0
+        v_accum_gradients *= 0.0
         past_states = {}
         past_rewards = {}
         past_actions = {}
 
-        # # Sync policy and value networks
+        # Sync thread-specific parameters
         session.run(sync_p)
         session.run(sync_v)
 
@@ -120,8 +126,6 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
         while not (terminal or ((t - t_start)  == t_max)):
             # Perform action a_t according to policy pi(a_t | s_t)
             probs = session.run(p_network, feed_dict={s: [s_t]})[0]
-            if T % 10 == 0:
-                print "max p, ", np.max(probs)
             action_index = sample_policy(ACTIONS, probs)
             a_t = np.zeros([ACTIONS])
             a_t[action_index] = 1
@@ -129,15 +133,15 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
             past_states[t] = s_t
             past_actions[t] = a_t
 
-            s_t1, r_t1, terminal, info = env.step(action_index)
-            ep_reward += r_t1
+            s_t1, r_t, terminal, info = env.step(action_index)
+            ep_reward += r_t
+
+            r_t = np.clip(r_t, -1, 1)
+            past_rewards[t] = r_t
 
             t += 1
             T += 1
             ep_t += 1
-
-            r_t1 = np.clip(r_t1, -1, 1)
-            past_rewards[t-1] = r_t1
             
             s_t = s_t1
 
@@ -148,19 +152,32 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
 
         for i in reversed(range(t_start, t)):
             R_t = past_rewards[i] + GAMMA * R_t
-            a_t = past_actions[i]
-            s_t = past_states[i]
-            g = session.run(grads, feed_dict={R : [R_t],
-                                              a : [a_t],
-                                              s : [s_t]})
-            accum_gradients += g
+            a_i = past_actions[i]
+            s_i = past_states[i]
+            p_accum_gradients += session.run(p_grads, feed_dict={R : [R_t],
+                                                                 a : [a_i],
+                                                                 s : [s_i]})
+
+            v_accum_gradients += session.run(v_grads, feed_dict={R : [R_t],
+                                                                 s : [s_i]})
+
+        # Anneal learning rate
+        lr = (float(TMAX) - (T - 1))/ TMAX * LEARNING_RATE
 
         # Apply gradients remotely
-        feed_dict = {}
-        for i, grad_var in enumerate(grads_and_vars):
-            feed_dict[grads_placeholders[i][0]] = accum_gradients[i]
-        feed_dict[learning_rate] = (float(TMAX) - (T - 1))/ TMAX * LEARNING_RATE
-        session.run(apply_grads, feed_dict=feed_dict)
+        print "P GRAD NORM: ", np.sum([np.linalg.norm(i) for i in p_accum_gradients]), "V GRAD NORM: ", np.sum([np.linalg.norm(i) for i in v_accum_gradients]), "MAX P: ", np.max(probs), "ACTION: ", action_index
+
+        p_feed_dict = {}
+        for i, grad_var in enumerate(p_grads_and_vars):
+            p_feed_dict[p_grads_placeholders[i][0]] = p_accum_gradients[i]
+        p_feed_dict[learning_rate] = lr
+        session.run(apply_p_grads, feed_dict=p_feed_dict)
+
+        v_feed_dict = {}
+        for i, grad_var in enumerate(v_grads_and_vars):
+            v_feed_dict[v_grads_placeholders[i][0]] = v_accum_gradients[i]
+        v_feed_dict[learning_rate] = lr
+        session.run(apply_v_grads, feed_dict=v_feed_dict)
 
         if terminal:
             # Episode ended, collect stats and reset game
@@ -192,7 +209,10 @@ def build_graph():
 
     # Shared global optimizer
     learning_rate = tf.placeholder(tf.float32, shape=[])
-    optimizer = tf.train.RMSPropOptimizer(learning_rate, RMSPROP_DECAY, RMSPROP_DECAY, RMSPROP_EPSILON)
+    p_optimizer = tf.train.AdamOptimizer(learning_rate)
+    v_optimizer = tf.train.AdamOptimizer(learning_rate)
+    # p_optimizer = tf.train.RMSPropOptimizer(learning_rate, RMSPROP_DECAY, RMSPROP_DECAY, RMSPROP_EPSILON)
+    # v_optimizer = tf.train.RMSPropOptimizer(learning_rate, RMSPROP_DECAY, RMSPROP_DECAY, RMSPROP_EPSILON)
 
     # One map of thread_name->thread_op per thread
     thread_ops = []
@@ -216,27 +236,27 @@ def build_graph():
         p_loss = -log_prob * (R_t - v_network_i) # maximizing log prob
 
         # Value Loss
-        v_loss = tf.reduce_mean(tf.square(R_t - v_network_i))
-
-        total_loss = p_loss + (0.5 * v_loss)
+        v_loss = tf.reduce_mean(tf.square(R_t - v_network_i)) * 0.5
 
         # One pair of (policy, value) compute_gradients per thread
-        all_params_i = union_params(p_params_i, v_params_i)
-        
-        compute_gradients_i = optimizer.compute_gradients(total_loss, var_list=all_params_i, gate_gradients=optimizer.GATE_NONE)
+        compute_p_gradients_i = p_optimizer.compute_gradients(p_loss, var_list=p_params_i)
+        compute_v_gradients_i = v_optimizer.compute_gradients(v_loss, var_list=v_params_i)
 
-        grads = [g for g, _ in compute_gradients_i]
+        p_grads = [g for g, _ in compute_p_gradients_i]
+        v_grads = [g for g, _ in compute_v_gradients_i]
 
         ops = {"s" : s_i,
                "p_network" : p_network_i,
                "v_network" : v_network_i,
                "R" : R_t,
                "a" : a_t,
-               "grads" : grads,
+               "p_grads" : p_grads,
+               "v_grads" : v_grads,
                "sync_p" : sync_p,
                "sync_v" : sync_v}
+
         thread_ops.append(ops)
-        
+
     # Op for applying remote gradients
     R_t = tf.placeholder("float", [None])
     a_t = tf.placeholder("float", [None, ACTIONS])
@@ -244,18 +264,22 @@ def build_graph():
     p_loss = -log_prob * (R_t - v_network)
     v_loss = tf.reduce_mean(tf.square(R_t - v_network))
 
-    total_loss = p_loss + (0.5 * v_loss) # NOTE: this isn't actually used, just a prereq for setting up apply_gradients
+    p_grads_and_vars = p_optimizer.compute_gradients(p_loss, var_list=p_params)
+    v_grads_and_vars = v_optimizer.compute_gradients(v_loss, var_list=v_params)
 
-    all_params = union_params(p_params, v_params)
-    grads_and_vars = optimizer.compute_gradients(total_loss, var_list=all_params, gate_gradients=optimizer.GATE_NONE)
+    p_grads_placeholders = []
+    for grad_var in p_grads_and_vars:
+       p_grads_placeholders.append((tf.placeholder('float', shape=grad_var[1].get_shape()), grad_var[1]))
 
-    grads_placeholders = []
-    for grad_var in grads_and_vars:
-       grads_placeholders.append((tf.placeholder('float', shape=grad_var[1].get_shape()), grad_var[1]))
+    apply_p_grads = p_optimizer.apply_gradients(p_grads_placeholders)
 
-    apply_grads = optimizer.apply_gradients(grads_placeholders)
+    v_grads_placeholders = []
+    for grad_var in v_grads_and_vars:
+       v_grads_placeholders.append((tf.placeholder('float', shape=grad_var[1].get_shape()), grad_var[1]))
 
-    return apply_grads, learning_rate, grads_and_vars, grads_placeholders, all_params, thread_ops
+    apply_v_grads = v_optimizer.apply_gradients(v_grads_placeholders)
+
+    return apply_p_grads, apply_v_grads, learning_rate, p_grads_and_vars, v_grads_and_vars, p_grads_placeholders, v_grads_placeholders, p_params, v_params, thread_ops
 
 # Set up some episode summary ops to visualize on tensorboard.
 def setup_summaries():

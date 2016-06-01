@@ -31,7 +31,7 @@ SHOW_TRAINING = True
 
 # Experiment params
 GAME = "Breakout-v0"
-ACTIONS = 6
+ACTIONS = 3
 NUM_CONCURRENT = 8
 NUM_EPISODES = 20000
 
@@ -41,15 +41,15 @@ RESIZED_HEIGHT = 84
 
 # Async params
 TARGET_NETWORK_UPDATE_FREQUENCY = 10000
-NETWORK_UPDATE_FREQUENCY = 5
+NETWORK_UPDATE_FREQUENCY = 32
 
 # DQN Params
 GAMMA = 0.99
 
 # Optimization Params
-LEARNING_RATE = 7e-4
-RMSPROP_DECAY = 0.99
-RMSPROP_EPSILON = 0.1
+LEARNING_RATE = 0.00025
+RMSPROP_DECAY = 0.95
+RMSPROP_EPSILON = 0.01
 
 # Epsilon params
 INITIAL_EPSILON = 1.0
@@ -98,7 +98,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     final_epsilon = sample_final_epsilon()
     epsilon = INITIAL_EPSILON
 
-    print "Starting thread ", num, "with final epsilon ", final_epsilon 
+    print "Starting thread ", num, "with final epsilon ", final_epsilon
 
     time.sleep(3*num)
     t = 0
@@ -113,13 +113,10 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
         ep_t = 0
 
         while True:
-            # Actor-learner chooses action based on e-greedy policy
-            """
-            Choose action based on current state and e-greedy policy
-            Returns action index and state.
-            """
             # Forward the deep q network, get Q(s,a) values
             readout_t = q_values.eval(session = session, feed_dict = {s : [s_t]})
+            
+            # Choose action based on e-greedy policy
             a_t = np.zeros([ACTIONS])
             action_index = 0
             if random.random() <= epsilon:
@@ -130,7 +127,6 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
 
             # Scale down epsilon
             if epsilon > final_epsilon:
-                # epsilon = INITIAL_EPSILON - (INITIAL_EPSILON - final_epsilon) * (T/float(FINAL_EXPLORATION_FRAME))
                 epsilon -= (INITIAL_EPSILON - final_epsilon) / FINAL_EXPLORATION_FRAME
     
             # Gym excecutes action in game environment on behalf of actor-learner
@@ -183,12 +179,6 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
                 saver.save(session, CHECKPOINT_SAVE_PATH, global_step = t)
     
             # Print info
-            state = ""
-            if t < FINAL_EXPLORATION_FRAME:
-                state = "explore"
-            else:
-                state = "train"
-
             if terminal:
                 stats = [ep_reward, episode_ave_max_q/float(ep_t), epsilon]
                 for i in range(len(stats)):
@@ -254,7 +244,7 @@ def train(session, graph_ops, saver):
     envs = [gym.make(GAME) for i in range(NUM_CONCURRENT)]
     
     summary_ops = setup_summaries()
-    summary_op = summary_ops[2]
+    summary_op = summary_ops[-1]
 
     # Initialize variables
     session.run(tf.initialize_all_variables())
