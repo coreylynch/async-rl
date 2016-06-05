@@ -20,7 +20,7 @@ EXPERIMENT_NAME = "breakout"
 SUMMARY_SAVE_PATH = "/Users/coreylynch/dev/async-rl/summaries/"+EXPERIMENT_NAME
 # SUMMARY_SAVE_PATH = "/home/ec2-user/async-rl/summaries/"+EXPERIMENT_NAME
 CHECKPOINT_SAVE_PATH = "/tmp/"+EXPERIMENT_NAME+".ckpt"
-# CHECKPOINT_NAME = "/Users/coreylynch/dev/async-rl/ec2_checkpoints/pong_large.ckpt-310000"
+CHECKPOINT_NAME = "/tmp/breakout.ckpt-975000"
 CHECKPOINT_INTERVAL=5000
 SUMMARY_INTERVAL=5
 # TRAINING = False
@@ -47,9 +47,10 @@ NETWORK_UPDATE_FREQUENCY = 32
 GAMMA = 0.99
 
 # Optimization Params
-LEARNING_RATE = 0.00025
-RMSPROP_DECAY = 0.95
-RMSPROP_EPSILON = 0.01
+LEARNING_RATE = 0.0001
+# LEARNING_RATE = 0.00025
+# RMSPROP_DECAY = 0.95
+# RMSPROP_EPSILON = 0.01
 
 # Epsilon params
 INITIAL_EPSILON = 1.0
@@ -83,7 +84,7 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
     a = graph_ops["a"]
     y = graph_ops["y"]
     grad_update = graph_ops["grad_update"]
-    learning_rate = graph_ops["learning_rate"]
+    # learning_rate = graph_ops["learning_rate"]
 
     summary_placeholders, update_ops, summary_op = summary_ops
 
@@ -160,14 +161,14 @@ def actor_learner_thread(num, env, session, graph_ops, summary_ops, saver):
             if t % NETWORK_UPDATE_FREQUENCY == 0 or terminal:
                 if s_j_batch:
                     # Get current linearly annealed lr
-                    lr = LEARNING_RATE * (TMAX-T)/float(TMAX)
+                    # lr = LEARNING_RATE * (TMAX-T)/float(TMAX)
 
                     # Perform asynchronous update of O network
                     grad_update.run(session = session, feed_dict = {
                            y : y_batch,
                            a : a_batch,
-                           s : s_j_batch,
-                           learning_rate : lr})
+                           s : s_j_batch})
+                           # learning_rate : lr})
     
                 # Clear gradients
                 s_j_batch = []
@@ -205,9 +206,10 @@ def build_graph():
     y = tf.placeholder("float", [None])
     action_q_values = tf.reduce_sum(tf.mul(q_values, a), reduction_indices=1)
     cost = tf.reduce_mean(tf.square(y - action_q_values))
-    learning_rate = tf.placeholder(tf.float32, shape=[])
-    optimizer = tf.train.RMSPropOptimizer(learning_rate, RMSPROP_DECAY, RMSPROP_DECAY, RMSPROP_EPSILON)
-    grad_update = optimizer.minimize(cost, var_list=network_params, gate_gradients=optimizer.GATE_NONE)
+    # learning_rate = tf.placeholder(tf.float32, shape=[])
+    # optimizer = tf.train.RMSPropOptimizer(learning_rate, RMSPROP_DECAY, RMSPROP_DECAY, RMSPROP_EPSILON)
+    optimizer = tf.train.AdamOptimizer(LEARNING_RATE)
+    grad_update = optimizer.minimize(cost, var_list=network_params)
 
     graph_ops = {"s" : s, 
                  "q_values" : q_values,
@@ -216,8 +218,8 @@ def build_graph():
                  "reset_target_network_params" : reset_target_network_params,
                  "a" : a,
                  "y" : y,
-                 "grad_update" : grad_update,
-                 "learning_rate" : learning_rate}
+                 "grad_update" : grad_update}
+                 # "learning_rate" : learning_rate}
 
     return graph_ops
 
