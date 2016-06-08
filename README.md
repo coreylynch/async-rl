@@ -28,9 +28,14 @@ This is what my per-episode reward and average max q value curves looked like ov
 ###Evaluation
 To run a gym evaluation, turn the testing flag to True and hand in a current checkpoint file:
 ```
-python async_dqn.py --testing True --checkpoint_path /tmp/breakout.ckpt-2690000 --num_eval_episodes 100
+python async_dqn.py --experiment breakout --testing True --checkpoint_path /tmp/breakout.ckpt-2690000 --num_eval_episodes 100
 ```
 After completing the eval, we can upload our eval file to OpenAI's site as follows:
+```python
+import gym
+gym.upload('/tmp/breakout/eval', api_key='YOUR_API_KEY')
+```
+Now we can find the eval at https://gym.openai.com/evaluations/eval_uwwAN0U3SKSkocC0PJEwQ
 
 ###Next Steps
 See a3c.py for a WIP async advantage actor critic implementation.
