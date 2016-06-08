@@ -1,4 +1,4 @@
-# Asyncronous RL in Tensorflow/Keras
+# Asyncronous RL in Tensorflow + Keras + OpenAI's Gym
 
 ![](http://g.recordit.co/BeiqC9l70B.gif)
 
