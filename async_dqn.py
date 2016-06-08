@@ -297,8 +297,7 @@ def main(_):
     saver = tf.train.Saver()
 
     if FLAGS.testing:
-        # evaluation(session, graph_ops, saver)
-        eval_multi(session, graph_ops, saver)
+        evaluation(session, graph_ops, saver)
     else:
         train(session, graph_ops, num_actions, saver)
 
