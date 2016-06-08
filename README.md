@@ -12,7 +12,8 @@ It uses Keras to define the deep q network (see model.py), OpenAI's gym library 
 ## Usage
 ###Training
 To kick off training, run:
-```python async_dqn.py --experiment breakout --game "Breakout-v0" --num_concurrent 8
+```
+python async_dqn.py --experiment breakout --game "Breakout-v0" --num_concurrent 8
 ```
 Here we're organizing the outputs for the current experiment under a folder called 'breakout', choosing "Breakout-v0" as our gym environment, and running 8 actor-learner threads concurrently.
 
@@ -22,11 +23,13 @@ We collect episode reward stats and max q values that can be vizualized with ten
 tensorboard --logdir /tmp/summaries/breakout
 ```
 This is what my per-episode reward and average max q value curves looked like over the training period:
-
+![](https://github.com/coreylynch/async-rl/blob/master/resources/episode_reward.png)
+![](https://github.com/coreylynch/async-rl/blob/master/resources/max_q_value.png)
 
 ###Evaluation
 To run an gym evaluation just turn the testing flag to True and hand in a current checkpoint file:
-```python async_dqn.py --experiment breakout --testing True --checkpoint_path /tmp/breakout.ckpt-920000 --num_eval_episodes 100
+```
+python async_dqn.py --experiment breakout --testing True --checkpoint_path /tmp/breakout.ckpt-2690000 --num_eval_episodes 100
 ```
 After completing the eval, we can upload our eval file to OpenAI's site as follows:
 
