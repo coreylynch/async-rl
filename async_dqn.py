@@ -244,6 +244,8 @@ def train(session, graph_ops, num_actions, saver):
     session.run(tf.initialize_all_variables())
     summary_save_path = FLAGS.summary_dir + "/" + FLAGS.experiment
     writer = tf.train.SummaryWriter(summary_save_path, session.graph)
+    if not os.path.exists(FLAGS.checkpoint_dir):
+        os.makedirs(FLAGS.checkpoint_dir)
 
     # Start num_concurrent actor-learner training threads
     actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id, envs[thread_id], session, graph_ops, num_actions, summary_ops, saver)) for thread_id in range(FLAGS.num_concurrent)]
