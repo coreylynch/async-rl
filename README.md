@@ -2,8 +2,7 @@
 
 ![](http://g.recordit.co/BeiqC9l70B.gif)
 
-## Intro
-This is a Tensorflow/Keras implementation of asyncronous 1-step Q learning as described in ["Asynchronous Methods for Deep Reinforcement Learning"](http://arxiv.org/pdf/1602.01783v1.pdf).
+This is a Tensorflow + Keras implementation of asyncronous 1-step Q learning as described in ["Asynchronous Methods for Deep Reinforcement Learning"](http://arxiv.org/pdf/1602.01783v1.pdf).
 
 Since we're using multiple actor-learner threads to stabilize learning in place of experience replay (which is super memory intensive), this runs comfortably on a macbook w/ 4g of ram.
 
@@ -27,9 +26,9 @@ This is what my per-episode reward and average max q value curves looked like ov
 ![](https://github.com/coreylynch/async-rl/blob/master/resources/max_q_value.png)
 
 ###Evaluation
-To run an gym evaluation just turn the testing flag to True and hand in a current checkpoint file:
+To run a gym evaluation, turn the testing flag to True and hand in a current checkpoint file:
 ```
-python async_dqn.py --experiment breakout --testing True --checkpoint_path /tmp/breakout.ckpt-2690000 --num_eval_episodes 100
+python async_dqn.py --testing True --checkpoint_path /tmp/breakout.ckpt-2690000 --num_eval_episodes 100
 ```
 After completing the eval, we can upload our eval file to OpenAI's site as follows:
 
