@@ -45,3 +45,6 @@ I found these super helpful as general background materials for deep RL:
 
 * [David Silver's "Deep Reinforcement Learning" lecture](http://videolectures.net/rldm2015_silver_reinforcement_learning/)
 * [Nervana's Demystifying Deep Reinforcement Learning blog post](http://www.nervanasys.com/demystifying-deep-reinforcement-learning/)
+
+### Note
+This has no affiliation with Deepmind or the authors, this is just a simple project I was using to learn TensorFlow. Feedback is highly appreciated.
