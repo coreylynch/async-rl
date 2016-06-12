@@ -8,6 +8,18 @@ Since we're using multiple actor-learner threads to stabilize learning in place 
 
 It uses Keras to define the deep q network (see model.py), OpenAI's gym library to interact with the Atari Learning Environment (see atari_environment.py), and Tensorflow for optimization/execution (see async_dqn.py).
 
+## Requirements
+* [tensorflow](https://www.tensorflow.org/versions/r0.9/get_started/os_setup.html)
+* [gym](https://github.com/openai/gym#installation)
+* [gym's atari environment] (https://github.com/openai/gym#atari)
+* skimage
+* Keras, then change backend to tensorflow by doing:
+```
+python -c "import keras"
+vim ~/.keras/keras.json
+```
+then change "backend": "theano" to "backend": "tensorflow"
+
 ## Usage
 ###Training
 To kick off training, run:
