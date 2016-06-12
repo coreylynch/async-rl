@@ -16,9 +16,8 @@ It uses Keras to define the deep q network (see model.py), OpenAI's gym library 
 * Keras, then change backend to tensorflow by doing:
 ```
 python -c "import keras"
-vim ~/.keras/keras.json
+vim ~/.keras/keras.json # change "backend": "theano" to "backend": "tensorflow"
 ```
-then change "backend": "theano" to "backend": "tensorflow"
 
 ## Usage
 ###Training
