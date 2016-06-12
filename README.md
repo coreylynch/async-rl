@@ -25,7 +25,7 @@ To kick off training, run:
 ```
 python async_dqn.py --experiment breakout --game "Breakout-v0" --num_concurrent 8
 ```
-Here we're organizing the outputs for the current experiment under a folder called 'breakout', choosing "Breakout-v0" as our gym environment, and running 8 actor-learner threads concurrently.
+Here we're organizing the outputs for the current experiment under a folder called 'breakout', choosing "Breakout-v0" as our gym environment, and running 8 actor-learner threads concurrently. See [this](https://gym.openai.com/envs#atari) for a full list of possible game names you can hand to --game.
 
 ###Visualizing training with tensorboard
 We collect episode reward stats and max q values that can be vizualized with tensorboard by running the following:
