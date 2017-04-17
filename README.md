@@ -16,14 +16,14 @@ It uses Keras to define the deep q network (see model.py), OpenAI's gym library 
 * Keras
 
 ## Usage
-###Training
+### Training
 To kick off training, run:
 ```
 python async_dqn.py --experiment breakout --game "Breakout-v0" --num_concurrent 8
 ```
 Here we're organizing the outputs for the current experiment under a folder called 'breakout', choosing "Breakout-v0" as our gym environment, and running 8 actor-learner threads concurrently. See [this](https://gym.openai.com/envs#atari) for a full list of possible game names you can hand to --game.
 
-###Visualizing training with tensorboard
+### Visualizing training with tensorboard
 We collect episode reward stats and max q values that can be vizualized with tensorboard by running the following:
 ```
 tensorboard --logdir /tmp/summaries/breakout
@@ -32,7 +32,7 @@ This is what my per-episode reward and average max q value curves looked like ov
 ![](https://github.com/coreylynch/async-rl/blob/master/resources/episode_reward.png)
 ![](https://github.com/coreylynch/async-rl/blob/master/resources/max_q_value.png)
 
-###Evaluation
+### Evaluation
 To run a gym evaluation, turn the testing flag to True and hand in a current checkpoint file:
 ```
 python async_dqn.py --experiment breakout --testing True --checkpoint_path /tmp/breakout.ckpt-2690000 --num_eval_episodes 100
@@ -44,7 +44,7 @@ gym.upload('/tmp/breakout/eval', api_key='YOUR_API_KEY')
 ```
 Now we can find the eval at https://gym.openai.com/evaluations/eval_uwwAN0U3SKSkocC0PJEwQ
 
-###Next Steps
+### Next Steps
 See a3c.py for a WIP async advantage actor critic implementation.
 
 ## Resources
