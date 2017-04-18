@@ -185,7 +185,7 @@ def build_graph(num_actions):
     # Define cost and gradient update op
     a = tf.placeholder("float", [None, num_actions])
     y = tf.placeholder("float", [None])
-    action_q_values = tf.reduce_sum(tf.mul(q_values, a), reduction_indices=1)
+    action_q_values = tf.reduce_sum(q_values * a, reduction_indices=1)
     cost = tf.reduce_mean(tf.square(y - action_q_values))
     optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate)
     grad_update = optimizer.minimize(cost, var_list=network_params)
