@@ -170,12 +170,14 @@ def actor_learner_thread(thread_id, env, session, graph_ops, num_actions, summar
 
 def build_graph(num_actions):
     # Create shared deep q network
-    s, q_network = build_network(num_actions=num_actions, agent_history_length=FLAGS.agent_history_length, resized_width=FLAGS.resized_width, resized_height=FLAGS.resized_height)
+    s, q_network = build_network(num_actions=num_actions, agent_history_length=FLAGS.agent_history_length,
+                      resized_width=FLAGS.resized_width, resized_height=FLAGS.resized_height, name_scope="q-network")
     network_params = q_network.trainable_weights
     q_values = q_network(s)
 
     # Create shared target network
-    st, target_q_network = build_network(num_actions=num_actions, agent_history_length=FLAGS.agent_history_length, resized_width=FLAGS.resized_width, resized_height=FLAGS.resized_height)
+    st, target_q_network = build_network(num_actions=num_actions, agent_history_length=FLAGS.agent_history_length,
+                      resized_width=FLAGS.resized_width, resized_height=FLAGS.resized_height, name_scope="target-network")
     target_network_params = target_q_network.trainable_weights
     target_q_values = target_q_network(st)
 
@@ -185,7 +187,7 @@ def build_graph(num_actions):
     # Define cost and gradient update op
     a = tf.placeholder("float", [None, num_actions])
     y = tf.placeholder("float", [None])
-    action_q_values = tf.reduce_sum(q_values * a, reduction_indices=1)
+    action_q_values = tf.reduce_sum(tf.multiply(q_values, a), reduction_indices=1)
     cost = tf.reduce_mean(tf.square(y - action_q_values))
     optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate)
     grad_update = optimizer.minimize(cost, var_list=network_params)
@@ -204,16 +206,16 @@ def build_graph(num_actions):
 # Set up some episode summary ops to visualize on tensorboard.
 def setup_summaries():
     episode_reward = tf.Variable(0.)
-    tf.scalar_summary("Episode Reward", episode_reward)
+    tf.summary.scalar("Episode_Reward", episode_reward)
     episode_ave_max_q = tf.Variable(0.)
-    tf.scalar_summary("Max Q Value", episode_ave_max_q)
+    tf.summary.scalar("Max_Q_Value", episode_ave_max_q)
     logged_epsilon = tf.Variable(0.)
-    tf.scalar_summary("Epsilon", logged_epsilon)
+    tf.summary.scalar("Epsilon", logged_epsilon)
     logged_T = tf.Variable(0.)
     summary_vars = [episode_reward, episode_ave_max_q, logged_epsilon]
     summary_placeholders = [tf.placeholder("float") for i in range(len(summary_vars))]
     update_ops = [summary_vars[i].assign(summary_placeholders[i]) for i in range(len(summary_vars))]
-    summary_op = tf.merge_all_summaries()
+    summary_op = tf.summary.merge_all()
     return summary_placeholders, update_ops, summary_op
 
 def get_num_actions():
@@ -231,9 +233,6 @@ def get_num_actions():
     return num_actions
 
 def train(session, graph_ops, num_actions, saver):
-    # Initialize target network weights
-    session.run(graph_ops["reset_target_network_params"])
-
     # Set up game environments (one per thread)
     envs = [gym.make(FLAGS.game) for i in range(FLAGS.num_concurrent)]
     
@@ -241,16 +240,22 @@ def train(session, graph_ops, num_actions, saver):
     summary_op = summary_ops[-1]
 
     # Initialize variables
-    session.run(tf.initialize_all_variables())
+    session.run(tf.global_variables_initializer())
+    # Initialize target network weights
+    session.run(graph_ops["reset_target_network_params"])
     summary_save_path = FLAGS.summary_dir + "/" + FLAGS.experiment
-    writer = tf.train.SummaryWriter(summary_save_path, session.graph)
+    writer = tf.summary.FileWriter(summary_save_path, session.graph)
     if not os.path.exists(FLAGS.checkpoint_dir):
         os.makedirs(FLAGS.checkpoint_dir)
 
     # Start num_concurrent actor-learner training threads
-    actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id, envs[thread_id], session, graph_ops, num_actions, summary_ops, saver)) for thread_id in range(FLAGS.num_concurrent)]
-    for t in actor_learner_threads:
-        t.start()
+
+    if(FLAGS.num_concurrent==1): # for debug
+        actor_learner_thread(0, envs[0], session, graph_ops, num_actions, summary_ops, saver)
+    else:
+        actor_learner_threads = [threading.Thread(target=actor_learner_thread, args=(thread_id, envs[thread_id], session, graph_ops, num_actions, summary_ops, saver)) for thread_id in range(FLAGS.num_concurrent)]
+        for t in actor_learner_threads:
+            t.start()
 
     # Show the agents training and write summary statistics
     last_summary_time = 0
@@ -270,7 +275,7 @@ def evaluation(session, graph_ops, saver):
     saver.restore(session, FLAGS.checkpoint_path)
     print "Restored model weights from ", FLAGS.checkpoint_path
     monitor_env = gym.make(FLAGS.game)
-    monitor_env.monitor.start(FLAGS.eval_dir+"/"+FLAGS.experiment+"/eval")
+    gym.wrappers.Monitor(monitor_env, FLAGS.eval_dir+"/"+FLAGS.experiment+"/eval")
 
     # Unpack graph ops
     s = graph_ops["s"]
@@ -287,6 +292,7 @@ def evaluation(session, graph_ops, saver):
             monitor_env.render()
             readout_t = q_values.eval(session = session, feed_dict = {s : [s_t]})
             action_index = np.argmax(readout_t)
+            print "action",action_index
             s_t1, r_t, terminal, info = env.step(action_index)
             s_t = s_t1
             ep_reward += r_t
@@ -295,7 +301,8 @@ def evaluation(session, graph_ops, saver):
 
 def main(_):
   g = tf.Graph()
-  with g.as_default(), tf.Session() as session:
+  session = tf.Session(graph=g)
+  with g.as_default(), session.as_default():
     K.set_session(session)
     num_actions = get_num_actions()
     graph_ops = build_graph(num_actions)
